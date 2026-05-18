@@ -876,6 +876,16 @@ function markSessionLoaderExecuted(reason = "boot") {
   qaState.loadSessionFilesNowLastReason = reason;
   renderSessionLoaderExecutedState();
   renderDebugState();
+  ["openConfig", "closeConfig", "applyConfig"].forEach((name) => {
+    if (typeof window[name] !== "function") {
+      console.warn(`[ifc-qa] console check: ${name} is not defined; config binding will be skipped`);
+    }
+  });
+  ["openConfig", "closeConfig", "applyConfig"].forEach((name) => {
+    if (typeof window[name] !== "function") {
+      console.warn(`[ifc-qa] console check: ${name} is not defined; config binding will be skipped`);
+    }
+  });
 }
 
 function maybeAutoFetchSessionFiles(sessionIdHint = "", reason = "auto_ready") {
@@ -1337,6 +1347,43 @@ function renderResultsPanel() {
   }).join("");
 }
 
+
+function openConfig() {
+  const modal = qs("#qaConfigModal");
+  const text = qs("#qaConfigText");
+  if (text) text.value = JSON.stringify(qaState.qaConfig || {}, null, 2);
+  if (modal) modal.hidden = false;
+}
+
+function closeConfig() {
+  const modal = qs("#qaConfigModal");
+  if (modal) modal.hidden = true;
+}
+
+function applyConfig() {
+  const text = qs("#qaConfigText");
+  if (!text) return;
+  try {
+    qaState.qaConfig = normalizeConfig(JSON.parse(text.value || "{}"));
+    qaState.configLoaded = true;
+    closeConfig();
+    renderActionButtons();
+  } catch (err) {
+    showErrorToast(`Invalid QA config JSON: ${err?.message || err}`);
+  }
+}
+
+function bindHandler(selector, eventName, handlerName, fallback = null) {
+  const el = qs(selector);
+  if (!el) return;
+  const handler = typeof window[handlerName] === "function" ? window[handlerName] : fallback;
+  if (typeof handler !== "function") {
+    console.warn(`[ifc-qa] skipped binding ${selector} ${eventName}; missing handler ${handlerName}`);
+    return;
+  }
+  el.addEventListener(eventName, handler);
+}
+
 function bindExtractor() {
   qaState.bindExtractorCalled = true;
   console.info("[ifc-qa] bindExtractor called");
@@ -1351,9 +1398,9 @@ function bindExtractor() {
   renderBuildInfo();
   renderSessionLoaderExecutedState();
   renderDebugState();
-  qs("#qaConfigureBtn")?.addEventListener("click", openConfig);
-  qs("#qaConfigClose")?.addEventListener("click", closeConfig);
-  qs("#qaConfigApply")?.addEventListener("click", applyConfig);
+  bindHandler("#qaConfigureBtn", "click", "openConfig", openConfig);
+  bindHandler("#qaConfigClose", "click", "closeConfig", closeConfig);
+  bindHandler("#qaConfigApply", "click", "applyConfig", applyConfig);
   qs("#qaSelectAllBtn")?.addEventListener("click", () => {
     qaState.selectedSessionFiles = qaState.sessionIfcFiles.map((file) => getSessionFileName(file)).filter(Boolean);
     renderSessionFiles();
