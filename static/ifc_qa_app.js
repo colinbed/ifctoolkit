@@ -64,6 +64,7 @@ const qaState = {
   bootPage: "",
 };
 let lastFetchedSessionId = null;
+const autoFetchedSessionIds = new Set();
 
 function isDebugPanelEnabled() {
   return !!qs("#qaDebugState");
@@ -846,6 +847,22 @@ function maybeFetchSessionFiles({ force = false, reason = "unspecified" } = {}) 
   return loadSessionFilesNow(sid);
 }
 
+function markSessionLoaderExecuted(reason = "boot") {
+  qaState.sessionLoaderExecuted = true;
+  qaState.loadSessionFilesNowLastReason = reason;
+  renderSessionLoaderExecutedState();
+  renderDebugState();
+}
+
+function maybeAutoFetchSessionFiles(sessionIdHint = "", reason = "auto_ready") {
+  const sid = String(sessionIdHint || qaState.canonicalSessionId || qaState.sessionId || "").trim();
+  if (!sid || !qaState.sessionReady || !qaState.bindExtractorCalled) return;
+  if (qaState.isFetchingSessionFiles) return;
+  if (autoFetchedSessionIds.has(sid)) return;
+  autoFetchedSessionIds.add(sid);
+  void loadSessionFilesNow(sid, reason);
+}
+
 async function loadSessionFilesNow(sessionIdFromCaller = "", reason = "direct") {
   qaState.sessionLoaderExecuted = true;
   qaState.loadSessionFilesNowCallCount = (qaState.loadSessionFilesNowCallCount || 0) + 1;
@@ -1359,13 +1376,9 @@ function bindExtractor() {
 
 function bootstrapSessionFileLoader(sessionIdHint = "", reason = "boot") {
   if (qaState.sessionLoaderBootstrapped) return;
-  const sid = String(sessionIdHint || qaState.canonicalSessionId || qaState.sessionId || "").trim();
-  if (!sid) return;
   qaState.sessionLoaderBootstrapped = true;
-  qaState.sessionLoaderExecuted = true;
-  renderSessionLoaderExecutedState();
-  renderDebugState();
-  void loadSessionFilesNow(sid, reason);
+  markSessionLoaderExecuted(reason);
+  maybeAutoFetchSessionFiles(sessionIdHint, reason);
 }
 
 function configTemplate() {
@@ -1413,6 +1426,8 @@ async function init() {
     await loadUploadLimits();
     root.insertAdjacentHTML("afterbegin", `<div class="muted" style="margin-bottom:8px">IFC QA UI mounted</div>`);
     bindExtractor();
+    markSessionLoaderExecuted("extractor_boot_effect");
+    maybeAutoFetchSessionFiles(qaState.canonicalSessionId || qaState.sessionId, "extractor_boot_effect");
     const sharedUnsub = window.IFCSession?.subscribe?.((sessionId) => {
       const normalized = String(sessionId || "").trim();
       qaState.sessionId = normalized;
@@ -1425,6 +1440,7 @@ async function init() {
       updateGlobalSessionBadge();
       if (qaState.sessionReady) {
         bootstrapSessionFileLoader(normalized, "session_subscribe");
+        maybeAutoFetchSessionFiles(normalized, "session_subscribe");
       }
       renderDebugState();
     });
@@ -1441,6 +1457,7 @@ async function init() {
       updateGlobalSessionBadge();
       if (qaState.sessionReady) {
         bootstrapSessionFileLoader(normalized, "toolkit_event");
+        maybeAutoFetchSessionFiles(normalized, "toolkit_event");
       }
       renderDebugState();
       console.info("IFC QA session changed event handled", { sessionId: normalized, eventName });
@@ -1456,6 +1473,7 @@ async function init() {
       .then(async () => {
         await refreshSessionSummary();
         bootstrapSessionFileLoader(qaState.canonicalSessionId || qaState.sessionId, "ensureSession_resolved");
+        maybeAutoFetchSessionFiles(qaState.canonicalSessionId || qaState.sessionId, "session-ready");
       })
       .catch((err) => {
         console.error("IFC QA session bootstrap failed", err);
