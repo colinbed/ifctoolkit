@@ -1363,11 +1363,12 @@ function bindExtractor() {
 function bootstrapSessionFileLoader(sessionIdHint = "", reason = "boot") {
   const sid = String(sessionIdHint || qaState.canonicalSessionId || qaState.sessionId || "").trim();
   if (!sid) {
-    markSessionLoaderExecuted(`${reason}_no_session_yet`);
-    return;
+    qaState.sessionLoaderBootstrapped = false;
+    return Promise.resolve([]);
   }
+  qaState.sessionLoaderBootstrapped = true;
   markSessionLoaderExecuted(reason);
-  void loadSessionFilesNow(sid, reason);
+  return loadSessionFilesNow(sid, reason);
 }
 
 function configTemplate() {
@@ -1459,14 +1460,11 @@ async function init() {
       }, { once: true });
     }
     ensureSession()
-        .then(async () => {
-          const sid = qaState.canonicalSessionId || qaState.sessionId;
-          await refreshSessionSummary();
-      
-          // Direct, non-optional session file load for extractor page.
-          // This mirrors the working app.js flow: ensure session -> refresh files.
-          await loadSessionFilesNow(sid, "ensureSession_resolved_direct");
-        })
+      .then(async () => {
+        const sid = String(qaState.canonicalSessionId || qaState.sessionId || "").trim();
+        await refreshSessionSummary();
+        await loadSessionFilesNow(sid, "ensureSession_resolved_direct");
+      })
       .catch((err) => {
         console.error("IFC QA session bootstrap failed", err);
         qaState.sessionReady = false;
