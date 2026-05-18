@@ -97,6 +97,10 @@ const DEFAULT_SHEETS = [
 
 const qs = (s) => document.querySelector(s);
 
+window.addEventListener("error", (event) => {
+  console.error("[ifc-qa] runtime error", event.error || event.message);
+});
+
 function showErrorToast(message) {
   let toast = qs("#qaErrorToast");
   if (!toast) {
@@ -444,6 +448,22 @@ function renderActionButtons() {
   if (startBtn) startBtn.disabled = qaState.isRunning || qaState.isStartingRun || !qaState.configLoaded || (!hasSessionFiles && !hasSelectedFiles);
   if (selectAllBtn) selectAllBtn.disabled = !hasSessionFiles || qaState.isFetchingSessionFiles;
   if (dlBtn) dlBtn.disabled = qaState.isRunning || !qaState.hasZip;
+}
+
+function renderSheetChecks() {
+  const container = qs("#qaSheetChecks");
+  if (!container) return;
+
+  const existing = selectedSheets();
+  container.innerHTML = DEFAULT_SHEETS.map(([key, label]) => {
+    const checked = existing[key] !== false;
+    return `
+      <label class="qa-check-row">
+        <input type="checkbox" data-sheet="${key}" ${checked ? "checked" : ""} />
+        <span>${label}</span>
+      </label>
+    `;
+  }).join("");
 }
 
 function selectedSheets() {
@@ -1360,12 +1380,31 @@ function bindExtractor() {
 
   void (async () => {
     try {
-      const sid = String(qaState.canonicalSessionId || qaState.sessionId || await ensureSession() || "").trim();
-      if (!sid) return;
-      await refreshSessionSummary();
+      const sid = String(
+        qaState.canonicalSessionId ||
+        qaState.sessionId ||
+        window.IFCSession?.getCurrentSessionId?.() ||
+        await ensureSession() ||
+        ""
+      ).trim();
+
+      if (!sid) {
+        qaState.loadSessionFilesNowLastError = "No session id resolved in bindExtractor autoload";
+        renderDebugState();
+        return;
+      }
+
+      qaState.sessionId = sid;
+      qaState.canonicalSessionId = sid;
+      qaState.sessionReady = true;
+      renderSessionState();
+      updateGlobalSessionBadge();
+
       await loadSessionFilesNow(sid, "bindExtractor_autoload");
     } catch (err) {
-      console.warn("[ifc-qa] bindExtractor autoload failed", err);
+      qaState.loadSessionFilesNowLastError = err?.stack || err?.message || String(err);
+      renderDebugState();
+      console.error("[ifc-qa] bindExtractor autoload failed", err);
     }
   })();
   renderActionButtons();
