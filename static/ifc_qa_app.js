@@ -58,6 +58,8 @@ const qaState = {
   fetchStatus: "",
   lastFetchError: "",
   isFetchingSessionFiles: false,
+  sharedSessionLoaderUsed: false,
+  sessionLoaderSource: "",
   lastSessionFilesFetchSessionId: "",
   sessionLoaderExecuted: false,
   sessionLoaderBootstrapped: false,
@@ -603,6 +605,8 @@ function renderDebugState() {
     `legacySessionKeys: ${JSON.stringify(legacySessionKeys)}`,
     `fetchUrl: ${qaState.fetchUrl || "-"}`,
     `fetchStatus: ${qaState.fetchStatus || "-"}`,
+    `sharedSessionLoaderUsed: ${qaState.sharedSessionLoaderUsed}`,
+    `sessionLoaderSource: ${qaState.sessionLoaderSource || "-"}`,
     `rawResponseShape: ${qaState.rawResponseShape || "-"}`,
     `rawSessionFilesCount: ${qaState.rawSessionFilesCount || 0}`,
     `rawSessionFileNames: ${previewNames}`,
@@ -856,7 +860,7 @@ function markSessionLoaderExecuted(reason = "boot") {
 
 function maybeAutoFetchSessionFiles(sessionIdHint = "", reason = "auto_ready") {
   const sid = String(sessionIdHint || qaState.canonicalSessionId || qaState.sessionId || "").trim();
-  if (!sid || !qaState.sessionReady || !qaState.bindExtractorCalled) return;
+  if (!sid || !qaState.sessionReady) return;
   if (qaState.isFetchingSessionFiles) return;
   if (autoFetchedSessionIds.has(sid)) return;
   autoFetchedSessionIds.add(sid);
@@ -903,41 +907,49 @@ async function loadSessionFilesNow(sessionIdFromCaller = "", reason = "direct") 
   qaState.fetchStatus = "loading";
   qaState.lastFetchError = "-";
   qaState.isFetchingSessionFiles = true;
+  qaState.sharedSessionLoaderUsed = !!window.IFCSession?.getSessionFiles;
+  qaState.sessionLoaderSource = qaState.sharedSessionLoaderUsed ? "IFCSession.getSessionFiles" : "extractor-fallback-fetch";
   renderSessionFiles();
   renderDebugState();
 
   try {
-    const res = await fetch(url, {
-      method: "GET",
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-    const text = await res.text();
-
-    let data;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
-
-    const files =
-      Array.isArray(data) ? data
-        : Array.isArray(data?.files) ? data.files
-          : Array.isArray(data?.items) ? data.items
-            : Array.isArray(data?.session_files) ? data.session_files
-              : [];
-
-    const normalizedFiles = files.map((record) => (window.IFCSession?.normalizeSessionFile ? window.IFCSession.normalizeSessionFile(record) : record));
-    qaState.fetchStatus = `${res.status} ${res.statusText}`;
-    qaState.rawResponseShape = Array.isArray(data)
-      ? "array"
-      : data && typeof data === "object"
-        ? Object.keys(data).join(",")
-        : typeof data;
-
-    if (!res.ok) {
-      throw new Error(`Failed to refresh session files (HTTP ${res.status})`);
+    let normalizedFiles = [];
+    if (window.IFCSession?.getSessionFiles) {
+      normalizedFiles = await window.IFCSession.getSessionFiles(sid, {
+        onResponse: (meta) => {
+          qaState.fetchUrl = meta?.url || url;
+          qaState.fetchStatus = String(meta?.status || "-");
+          qaState.rawResponseShape = meta?.shape || "-";
+        },
+      });
+      qaState.fetchStatus = qaState.fetchStatus || "200";
+    } else {
+      const res = await fetch(url, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const text = await res.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+      const files =
+        Array.isArray(data) ? data
+          : Array.isArray(data?.files) ? data.files
+            : Array.isArray(data?.items) ? data.items
+              : Array.isArray(data?.session_files) ? data.session_files
+                : [];
+      normalizedFiles = files.map((record) => (window.IFCSession?.normalizeSessionFile ? window.IFCSession.normalizeSessionFile(record) : record));
+      qaState.fetchStatus = `${res.status} ${res.statusText}`;
+      qaState.rawResponseShape = Array.isArray(data)
+        ? "array"
+        : data && typeof data === "object"
+          ? Object.keys(data).join(",")
+          : typeof data;
+      if (!res.ok) throw new Error(`Failed to refresh session files (HTTP ${res.status})`);
     }
 
     lastFetchedSessionId = sid;

@@ -88,3 +88,18 @@ def test_ifc_data_qa_frontend_bootstraps_session_file_loader_and_refresh_uses_sa
     assert "markSessionLoaderExecuted(\"extractor_boot_effect\")" in qa_js
     assert "qaRefreshSessionFilesBtn" in qa_js
     assert "loadSessionFilesNow(qaState.canonicalSessionId || qaState.sessionId, \"manual_refresh\")" in qa_js
+    assert "window.IFCSession.getSessionFiles(sid, {" in qa_js
+    assert "sharedSessionLoaderUsed: ${qaState.sharedSessionLoaderUsed}" in qa_js
+    assert "sessionLoaderSource: ${qaState.sessionLoaderSource || \"-\"}" in qa_js
+
+
+def test_ifc_data_qa_and_upload_page_use_shared_session_files_loader_contract():
+    root = Path(__file__).resolve().parent.parent
+    qa_js = (root / "static" / "ifc_qa_app.js").read_text(encoding="utf-8")
+    upload_js = (root / "static" / "app.js").read_text(encoding="utf-8")
+    shared_js = (root / "static" / "session_shared.js").read_text(encoding="utf-8")
+
+    assert "const url = `/api/session/${sid}/files`;" in shared_js
+    assert "state.files = await window.IFCSession.getSessionFiles(state.sessionId);" in upload_js
+    assert "window.IFCSession.getSessionFiles(sid, {" in qa_js
+    assert "normalized.endsWith(\".ifc\") || normalized.endsWith(\".ifczip\") || normalized.endsWith(\".ifcxml\")" in qa_js
