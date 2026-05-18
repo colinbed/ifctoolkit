@@ -1513,6 +1513,44 @@ def detect_ifc_schema_from_header(ifc_path: str) -> Tuple[str, str]:
     return "IFC4", "Unable to parse FILE_SCHEMA from IFC header; using IFC4 fallback lists."
 
 
+
+
+def parse_ifc_header_metadata(ifc_path: str) -> Dict[str, Any]:
+    meta = {"schema": "", "application": "", "exporter": "", "is_ifc2x3": False, "is_civil3d": False, "is_edmsix": False, "warnings": []}
+    try:
+        head=[]
+        with open(ifc_path, "r", encoding="utf-8", errors="ignore") as handle:
+            for _ in range(200):
+                line = handle.readline()
+                if not line:
+                    break
+                head.append(line.strip())
+                if "ENDSEC" in line.upper():
+                    break
+        blob = "\n".join(head)
+        upper = blob.upper()
+        schema, warning = detect_ifc_schema_from_header(ifc_path)
+        meta["schema"] = schema
+        meta["is_ifc2x3"] = schema.upper() == "IFC2X3"
+        if warning:
+            meta["warnings"].append(warning)
+        app_match = re.search(r"FILE_NAME\s*\([^)]*\)", blob, re.IGNORECASE|re.DOTALL)
+        if app_match:
+            app_chunk = app_match.group(0)
+            q = re.findall(r"'([^']*)'", app_chunk)
+            if len(q) >= 7:
+                meta["application"] = q[6]
+        meta["is_civil3d"] = "CIVIL 3D" in upper or "AUTODESK CIVIL 3D" in upper
+        meta["is_edmsix"] = "EDMSIX" in upper
+        if meta["is_edmsix"]:
+            meta["exporter"] = "EDMsix"
+        elif meta["is_civil3d"]:
+            meta["exporter"] = "Autodesk Civil 3D"
+        else:
+            meta["exporter"] = meta["application"]
+    except Exception as exc:
+        meta["warnings"].append(f"Header parse failed: {exc}")
+    return meta
 def _sanitize_excel_text(value: Any) -> Any:
     if isinstance(value, str):
         return ILLEGAL_CHARACTERS_RE.sub("", value)
@@ -1817,7 +1855,9 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
     site = sites[0] if sites else None
     buildings = ifc.by_type("IfcBuilding")
     building = buildings[0] if buildings else None
-    detected_schema, schema_warning = detect_ifc_schema_from_header(ifc_path)
+    header_meta = parse_ifc_header_metadata(ifc_path)
+    detected_schema, schema_warning = header_meta.get("schema") or detect_ifc_schema_from_header(ifc_path)[0], ""
+    APP_LOGGER.info("IFC header metadata: %s", header_meta)
     schema_for_lookup = (detected_schema or ifc.schema or "IFC4").upper()
     is_ifc2x3 = schema_for_lookup == "IFC2X3"
     b_en_ref, b_en_name = ("", "")
@@ -1858,7 +1898,7 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             "CurrentEntity": current_entity,
             "TargetEntity": current_entity,
             "CurrentPredefinedType": current_predefined or "",
-            "TargetPredefinedType": current_predefined or "",
+            "TargetPredefinedType": current_predefined or "UNCHANGED",
             "Name": getattr(obj, "Name", "") or "",
             "ObjectType or ElementType": (getattr(obj, "ElementType", "") if is_type_object else getattr(obj, "ObjectType", "")) or "",
             "ApplicableOccurrence": getattr(obj, "ApplicableOccurrence", "") if is_type_object else "",
@@ -1913,6 +1953,10 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
     elements_df = pd.DataFrame(element_rows)
     types_df = pd.DataFrame(type_rows)
     elements_df, types_df = _merge_existing_excel_overrides(output_path, elements_df, types_df)
+    for _df in (elements_df, types_df):
+        for _col in ("TargetEntity", "TargetPredefinedType", "ApplyChange", "Validation", "SuggestedEntity", "SuggestedPredefinedType", "SuggestionReason"):
+            if _col in _df.columns:
+                _df[_col] = _df[_col].astype(object).where(_df[_col].notna(), " ")
     raw_entities_df = pd.DataFrame(raw_entity_rows)
     changelog_df = pd.DataFrame(columns=["RowKey", "GlobalId", "StepId", "Status", "Message", "FromEntity", "ToEntity", "FromPredefinedType", "ToPredefinedType"])
     timer.stop("elements_table")
@@ -2130,7 +2174,14 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             workbook[lookup_sheet].sheet_state = "hidden"
     validation_error = validate_workbook_after_export(output_path)
     if validation_error:
-        raise HTTPException(status_code=500, detail={"message": "Excel export validation failed", "error": validation_error})
+        APP_LOGGER.warning("Primary workbook export invalid, using safe fallback: %s", validation_error)
+        with pd.ExcelWriter(output_path, engine="openpyxl") as safe_writer:
+            for nm, df in (("ProjectData", project_df), ("Elements", elements_df), ("Types", types_df), ("RawEntities", raw_entities_df), ("Properties", props_df), ("COBieMapping", cobie_df), ("Uniclass_Pr", uniclass_pr_df), ("Uniclass_Ss", uniclass_ss_df), ("Uniclass_EF", uniclass_ef_df), ("ChangeLog", changelog_df)):
+                if nm in plan.include_sheets:
+                    _sanitize_dataframe_for_excel(df).to_excel(safe_writer, sheet_name=nm, index=False)
+        validation_error = validate_workbook_after_export(output_path)
+        if validation_error:
+            raise HTTPException(status_code=500, detail={"message": "Excel export validation failed", "error": validation_error})
     timer.stop("excel_write")
     return {
         "path": output_path,
@@ -2146,7 +2197,8 @@ def extract_to_excel(ifc_path: str, output_path: str, plan_payload: Optional[Dic
     return extract_to_excel_with_plan(ifc_path, output_path, plan=plan)
 
 
-def _set_element_presentation_layer(ifc, elem, target_layer_name: str):
+def _set_element_presentation_layer(ifc, elem, target_layer_name: str, mode: str = "replace"):
+    diagnostics = {"updated": 0, "skipped_shared": 0, "blank_after": 0}
     target = clean_value(target_layer_name)
 
     def _expand_item(item, visited):
@@ -2198,13 +2250,23 @@ def _set_element_presentation_layer(ifc, elem, target_layer_name: str):
     if not items:
         return
 
+    item_to_products = {}
+    for prod in ifc.by_type("IfcProduct"):
+        rep = getattr(prod, "Representation", None)
+        for r in getattr(rep, "Representations", []) or []:
+            for it in getattr(r, "Items", []) or []:
+                item_to_products.setdefault(it.id(), set()).add(getattr(prod, "GlobalId", str(prod.id())))
+
     empty_layers = set()
     for item in items:
         for inv in ifc.get_inverse(item) or []:
             if not inv or not inv.is_a("IfcPresentationLayerAssignment"):
                 continue
             assigned = list(getattr(inv, "AssignedItems", []) or [])
-            if item in assigned:
+            if item in assigned and mode == "replace":
+                if len(item_to_products.get(item.id(), set())) > 1:
+                    diagnostics["skipped_shared"] += 1
+                    continue
                 assigned = [a for a in assigned if a != item]
                 inv.AssignedItems = assigned
                 if len(assigned) == 0:
@@ -2232,6 +2294,8 @@ def _set_element_presentation_layer(ifc, elem, target_layer_name: str):
         if item not in assigned:
             assigned.append(item)
     layer.AssignedItems = assigned
+    diagnostics["updated"] = len(items)
+    return diagnostics
 
 
 def validate_excel_import_data(
@@ -2448,8 +2512,9 @@ def update_ifc_from_excel(
     project = ifc.by_type("IfcProject")[0]
     site = ifc.by_type("IfcSite")[0] if ifc.by_type("IfcSite") else None
     building = ifc.by_type("IfcBuilding")[0] if ifc.by_type("IfcBuilding") else None
-    detected_schema = (ifc.schema or "").upper()
-    APP_LOGGER.info("EN Entities write-back detected schema=%s", detected_schema)
+    header_meta = parse_ifc_header_metadata(ifc_path)
+    detected_schema = (ifc.schema or header_meta.get("schema") or "").upper()
+    APP_LOGGER.info("EN Entities write-back detected schema=%s header=%s", detected_schema, header_meta)
     en_entities_value, en_entities_name = _read_projectdata_en_entities(project_df)
     APP_LOGGER.info("ProjectData EN Entities value read=%r name=%r", en_entities_value, en_entities_name)
     en_entities_rel: Optional[Any] = None
@@ -2735,7 +2800,7 @@ def update_ifc_from_excel(
         if pd.notna(row.get("TypeDescription")):
             elem.Description = clean_value(row["TypeDescription"]) or elem.Description
         if "IFCPresentationLayer" in elements_df.columns and pd.notna(row.get("IFCPresentationLayer")):
-            _set_element_presentation_layer(ifc, elem, row.get("IFCPresentationLayer"))
+            _set_element_presentation_layer(ifc, elem, row.get("IFCPresentationLayer"), mode="replace")
         if pd.notna(row.get("TypeName")):
             type_name = str(clean_value(row["TypeName"]))
             type_obj = None
@@ -3326,22 +3391,16 @@ def list_storey_objects(storey) -> List[Any]:
 
 
 def ensure_storey_associations(storey) -> List[Any]:
+    # IFC2X3 IfcBuildingStorey does not expose HasAssociations inverse on all bindings.
+    if not hasattr(storey, "HasAssociations"):
+        return []
     try:
         assoc = getattr(storey, "HasAssociations", None)
     except Exception:
         assoc = None
     if assoc in (None, (), []):
-        assoc = []
-    else:
-        assoc = list(assoc)
-    try:
-        storey.HasAssociations = assoc
-    except Exception:
-        try:
-            setattr(storey, "HasAssociations", assoc)
-        except Exception:
-            pass
-    return assoc
+        return []
+    return list(assoc)
 
 
 def containment_rels(model, obj) -> List[Any]:
@@ -3361,25 +3420,6 @@ def containment_rels(model, obj) -> List[Any]:
         except Exception:
             rels = []
     return rels
-
-
-def ensure_storey_associations(storey) -> List[Any]:
-    try:
-        assoc = getattr(storey, "HasAssociations", None)
-    except Exception:
-        assoc = None
-    if assoc in (None, (), []):
-        assoc = []
-    else:
-        assoc = list(assoc)
-    try:
-        storey.HasAssociations = assoc
-    except Exception:
-        try:
-            setattr(storey, "HasAssociations", assoc)
-        except Exception:
-            pass
-    return assoc
 
 
 def move_objects_to_storey(model, objects, source_storey, target_storey):
@@ -3514,7 +3554,6 @@ def update_level(ifc_path: str, storey_id: int, payload: Dict[str, Any], output_
         if desired_ref in (None, ""):
             if existing_rel:
                 try:
-                    storey.HasAssociations = [r for r in associations if r != existing_rel]
                     model.remove(existing_rel)
                 except Exception:
                     pass
@@ -3544,8 +3583,7 @@ def update_level(ifc_path: str, storey_id: int, payload: Dict[str, Any], output_
                     RelatedObjects=[storey],
                     RelatingClassification=existing_cref,
                 )
-                associations = ensure_storey_associations(storey)
-                storey.HasAssociations = list(associations) + [existing_rel]
+                # inverse relations are maintained by IfcOpenShell; avoid setting IFC2X3 inverse attrs directly
             else:
                 existing_cref.ItemReference = str(desired_ref)
                 if getattr(existing_cref, "Name", "") in (None, "", COBIE_FLOOR_CLASS_NAME):
