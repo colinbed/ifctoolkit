@@ -72,10 +72,19 @@ def test_ifc_data_qa_frontend_bootstraps_session_file_loader_and_refresh_uses_sa
 
     assert "function bootstrapSessionFileLoader" in qa_js
     assert "qaState.sessionLoaderBootstrapped = true;" in qa_js
+    assert "function markSessionLoaderExecuted(reason = \"boot\")" in qa_js
+    assert "function maybeAutoFetchSessionFiles(sessionIdHint = \"\", reason = \"auto_ready\")" in qa_js
+    assert "const autoFetchedSessionIds = new Set();" in qa_js
+    assert "qaState.sessionLoaderExecuted = true;" in qa_js
+    assert "autoFetchedSessionIds.has(sid)" in qa_js
     assert "void loadSessionFilesNow(sid, reason);" in qa_js
     assert "bootstrapSessionFileLoader(normalized, \"session_subscribe\")" in qa_js
+    assert "maybeAutoFetchSessionFiles(normalized, \"session_subscribe\")" in qa_js
     assert "bootstrapSessionFileLoader(normalized, \"toolkit_event\")" in qa_js
+    assert "maybeAutoFetchSessionFiles(normalized, \"toolkit_event\")" in qa_js
     assert "bootstrapSessionFileLoader(qaState.canonicalSessionId || qaState.sessionId, \"ensureSession_resolved\")" in qa_js
+    assert "maybeAutoFetchSessionFiles(qaState.canonicalSessionId || qaState.sessionId, \"session-ready\")" in qa_js
     assert "bootstrapSessionFileLoader(qaState.canonicalSessionId || qaState.sessionId, \"mount_immediate\")" in qa_js
+    assert "markSessionLoaderExecuted(\"extractor_boot_effect\")" in qa_js
     assert "qaRefreshSessionFilesBtn" in qa_js
     assert "loadSessionFilesNow(qaState.canonicalSessionId || qaState.sessionId, \"manual_refresh\")" in qa_js
