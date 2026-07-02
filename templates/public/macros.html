@@ -1,0 +1,8 @@
+{% macro hero(page, secondary='View Tools') -%}
+<section class="public-hero">
+  <div><p class="public-eyebrow">IFC Toolkit</p><h1>{{ page.title }}</h1><p class="public-lede">{{ page.subtitle }}</p><div class="public-actions"><a class="public-button" href="/app">Launch Toolkit</a><a class="public-button secondary" href="/tools">{{ secondary }}</a></div></div>
+  <div class="hero-panel"><div class="layer-stack"><span></span><span></span><span></span></div><strong>ifctoolkit</strong><p>Structured data, validation and compliance workflows for IFC and COBie teams.</p></div>
+</section>
+{%- endmacro %}
+{% macro cta(text='Ready to improve your information quality?', button='Launch Toolkit', href='/app') -%}<section class="cta-band"><h2>{{ text }}</h2><a class="public-button" href="{{ href }}">{{ button }}</a></section>{%- endmacro %}
+{% macro cards(items) -%}<div class="public-grid">{% for i in items %}<article class="public-card"><h3>{{ i[0] }}</h3><p>{{ i[1] }}</p>{% if i|length > 2 %}<span class="badge-light">{{ i[2] }}</span>{% endif %}</article>{% endfor %}</div>{%- endmacro %}
