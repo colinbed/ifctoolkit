@@ -23,7 +23,7 @@ spec:
       containers:
         - name: ifctoolkit
           image: ghcr.io/colinbed/ifctoolkit:latest
-
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
 
