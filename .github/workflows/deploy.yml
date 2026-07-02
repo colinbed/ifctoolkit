@@ -28,11 +28,11 @@ jobs:
 
       - name: Build image
         run: |
-          docker build -t ghcr.io/YOUR_USERNAME/ifctoolkit:latest .
+          docker build -t ghcr.io/colinbed/IFC_Apps:latest .
 
       - name: Push image
         run: |
-          docker push ghcr.io/YOUR_USERNAME/ifctoolkit:latest
+          docker push ghcr.io/colinbed/IFC_Apps:latest
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
