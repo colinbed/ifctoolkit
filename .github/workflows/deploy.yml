@@ -45,3 +45,5 @@ jobs:
       - name: Deploy
         run: |
           kubectl apply -f k8s/
+          kubectl rollout restart deployment/ifctoolkit
+          kubectl rollout status deployment/ifctoolkit

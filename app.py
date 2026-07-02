@@ -6551,6 +6551,7 @@ def marketing_home_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/home.html", context={"request": request, "page": PUBLIC_PAGES["home"]})
 
 
+@app.get("/upload", response_class=HTMLResponse)
 @app.get("/app", response_class=HTMLResponse)
 def upload_page(request: Request):
     return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
