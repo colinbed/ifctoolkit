@@ -12,48 +12,14 @@
         <div class="site-header-inner">
           {% include "partials/brand.html" %}
           <nav class="site-nav" aria-label="Primary navigation">
-            <a class="nav-link nav-root-link {% if active=='upload' %}active{% endif %}" href="/app">Upload</a>
-            <details class="nav-dropdown">
-              <summary class="nav-dropdown-summary">Tools</summary>
-              <div class="nav-dropdown-menu">
-                <a class="nav-link nav-child {% if active=='excel' %}active{% endif %}" href="/excel">IFC to Excel</a>
-                <a class="nav-link nav-child {% if active=='cleaner' %}active{% endif %}" href="/cleaner">Pset Purge</a>
-                <a class="nav-link nav-child {% if active=='storeys' %}active{% endif %}" href="/storeys">Storey & Global Z Control</a>
-                <a class="nav-link nav-child {% if active=='levels' %}active{% endif %}" href="/levels">Level Manager</a>
-                <a class="nav-link nav-child {% if active=='proxy' %}active{% endif %}" href="/proxy">Proxy to IFCClass</a>
-                <a class="nav-link nav-child {% if active=='cobieqc' %}active{% endif %}" href="/tools/cobieqc">COBie QC</a>
-                <a class="nav-link nav-child {% if active=='presentation-layer' %}active{% endif %}" href="/presentation-layer">Presentation Layer Alignment</a>
-                <a class="nav-link nav-child {% if active=='reduce-file-size' %}active{% endif %}" href="/tools/reduce-file-size">IFC File Size Reducer</a>
-                <a class="nav-link nav-child {% if active=='purge-area-spaces' %}active{% endif %}" href="/tools/purge-area-spaces">Purge Area Spaces</a>
-              </div>
-            </details>
-            <details class="nav-dropdown">
-              <summary class="nav-dropdown-summary">IFC Data QA</summary>
-              <div class="nav-dropdown-menu">
-                <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='extractor' %}active{% endif %}" href="/ifc-qa/extractor">Extractor</a>
-                <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='dashboard' %}active{% endif %}" href="/ifc-qa/dashboard">Dashboard</a>
-                <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='config' %}active{% endif %}" href="/ifc-qa/config">Config</a>
-              </div>
-            </details>
-            <details class="nav-dropdown">
-              <summary class="nav-dropdown-summary">WIP <span class="nav-preview-badge">Preview</span></summary>
-              <div class="nav-dropdown-menu">
-                <a class="nav-link nav-child {% if active=='ifc-move-rotate' %}active{% endif %}" href="/wip/ifc-move-rotate">IFC Move / Rotate</a>
-                <a class="nav-link nav-child {% if active=='step2ifc' %}active{% endif %}" href="/step2ifc">STEP to IFC</a>
-                <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">Model Checking</a>
-              </div>
-            </details>
-            <a class="nav-link nav-root-link {% if active=='files' %}active{% endif %}" href="/files">Reports</a>
-            <a class="nav-link nav-root-link" href="/">Public Site</a>
-            <details class="nav-dropdown">
-              <summary class="nav-dropdown-summary">Resources</summary>
-              <div class="nav-dropdown-menu">
-                <a class="nav-link nav-child" href="/files">Session Files</a>
-                <a class="nav-link nav-child {% if active=='presentation-layer' %}active{% endif %}" href="/presentation-layer">Presentation Layer</a>
-                <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">Model Checking</a>
-              </div>
-            </details>
-            <a class="nav-link nav-root-link {% if active=='mappings' %}active{% endif %}" href="/admin/mappings">Settings</a>
+            <a class="nav-link nav-root-link" href="/">Home</a>
+            <a class="nav-link nav-root-link" href="/about">About</a>
+            <a class="nav-link nav-root-link {% if active=='tools' %}active{% endif %}" href="/tools">Tools</a>
+            <a class="nav-link nav-root-link" href="/documentation">Documentation</a>
+            <a class="nav-link nav-root-link" href="/compliance">Compliance</a>
+            <a class="nav-link nav-root-link" href="/pricing">Pricing</a>
+            <a class="nav-link nav-root-link" href="/contact">Contact</a>
+            <a class="nav-link nav-root-link {% if active=='upload' %}active{% endif %}" href="/upload">Upload</a>
           </nav>
           <div class="session-badge" data-session-badge>Session establishing...</div>
         </div>

@@ -1,7 +1,7 @@
 {% extends "public/base.html" %}
 {% import "public/macros.html" as ui %}
 {% block content %}
-{{ ui.hero(page, 'Contact support') }}
+{{ ui.hero(page, 'Contact support', secondary_href='/contact') }}
 <section class="public-section"><h2>Getting started</h2>{{ ui.cards([('Create and access','Create an account where enabled, open the available tools and choose the workflow you need.'),('Upload an IFC file','Upload only the model data needed for the task and allow the processing step to complete.'),('Review and download','Understand file processing messages, download outputs and remove or replace files where applicable.')]) }}</section>
 <section class="public-section"><h2>IFC checking workflow</h2><ol class="steps"><li>Prepare the IFC export</li><li>Upload the model</li><li>Run available checks</li><li>Review warnings and failures</li><li>Export results</li><li>Feed issues back to the authoring team</li><li>Re-check after correction</li></ol></section>
 <section class="public-section"><h2>Common checks</h2>{{ ui.cards([('IFC entity checks','Review whether objects are exported using useful IFC entities.'),('Naming convention checks','Check naming consistency against agreed project patterns.'),('Property set checks','Identify missing, empty or inconsistent property data.'),('Classification checks','Review classification references and gaps.'),('Storey and spatial structure checks','Inspect building, storey and containment structure.'),('COBie-related checks','Review handover fields and asset information readiness.'),('Type and component data checks','Compare type-level and component-level information.'),('Proxy object review','Find proxy objects that may reduce downstream usability.')]) }}</section>
