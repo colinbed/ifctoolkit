@@ -1,0 +1,1 @@
+{"id":"strict","name":"strict","strict_mode":true,"required_external_identifier":true,"classification_required":true,"allow_placeholders":false,"cross_sheet_references_strict":true,"blank_optional_sheets_allowed":true,"column_order_matters":true,"max_text_length":255}

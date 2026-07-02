@@ -95,6 +95,9 @@ from backend.ifc_area_spaces import (
 from backend.ifc_area_spaces_router import build_area_spaces_router
 from backend.ifc_move_rotate import TransformRequest, transform_ifc_file
 from backend.project_tables import get_tables_for_project_slug
+from backend.cobie_checker import validate_cobie_workbook
+from backend.cobie_reporter import write_csv as write_cobie_csv, write_excel_report as write_cobie_excel_report, write_marked_up_workbook as write_cobie_marked_workbook
+from backend.cobie_rules import list_rulepacks as list_cobie_rulepacks
 
 try:
     import gc
@@ -132,11 +135,14 @@ REQUEST_BODY_LIMIT_HEADROOM_BYTES = 25_000_000
 MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + REQUEST_BODY_LIMIT_HEADROOM_BYTES
 MAX_IFC_BYTES = int(os.getenv("MAX_IFC_BYTES", str(80 * 1024 * 1024)))
 MAX_EXCEL_BYTES = int(os.getenv("MAX_EXCEL_BYTES", str(25 * 1024 * 1024)))
+MAX_COBIE_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024
+COBIE_ENABLE_MARKUP_EXPORT = os.getenv("COBIE_ENABLE_MARKUP_EXPORT", "true").lower() in {"1", "true", "yes"}
+COBIE_DEFAULT_RULEPACK = os.getenv("COBIE_DEFAULT_RULEPACK", "ifctoolkit-recommended")
 HEAVY_JOB_TIMEOUT_SECONDS = int(os.getenv("HEAVY_JOB_TIMEOUT_SECONDS", "900"))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 HASHED_STATIC_DIR = STATIC_DIR / "_hashed"
 HASHED_NAME_RE = re.compile(r"\.[0-9a-f]{8,}\.")
-ASSET_VERSIONED_FILES = ("app.js", "ifc_qa_app.js", "session_shared.js", "style.css")
+ASSET_VERSIONED_FILES = ("app.js", "ifc_qa_app.js", "session_shared.js", "style.css", "cobie_qa.js")
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -430,6 +436,7 @@ STEP2IFC_JOBS: Dict[str, Dict[str, Any]] = {}
 DATA_EXTRACT_JOBS: Dict[str, Dict[str, Any]] = {}
 IFC_QA_JOBS: Dict[str, Dict[str, Any]] = {}
 COBIEQC_JOB_STORE = CobieQcJobStore()
+COBIE_QA_JOBS: Dict[str, Dict[str, Any]] = {}
 EXCEL_SCAN_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -6456,6 +6463,7 @@ async def upload_request_size_guard(request: Request, call_next):
         "/api/ifc-qa/run",
         "/api/ifc-qa/add-to-zip",
         "/api/tools/cobieqc/run",
+        "/api/cobie/validate",
     }
     path = request.url.path
     is_upload_path = path in upload_paths or path.endswith("/upload")
@@ -6661,6 +6669,119 @@ def marketing_about_page(request: Request):
 @app.get("/contact", response_class=HTMLResponse)
 def marketing_contact_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/contact.html", context={"request": request, "page": PUBLIC_PAGES["contact"]})
+
+
+
+@app.get("/tools/cobie-qa", response_class=HTMLResponse)
+def cobie_qa_page(request: Request):
+    return templates.TemplateResponse(request=request, name="cobie_qa.html", context={"request": request, "active": "cobie-qa", "max_upload_mb": int(MAX_COBIE_UPLOAD_BYTES / (1024 * 1024)), "default_rulepack": COBIE_DEFAULT_RULEPACK})
+
+@app.get("/api/cobie/rulepacks")
+def cobie_rulepacks():
+    return {"rulepacks": list_cobie_rulepacks(), "default": COBIE_DEFAULT_RULEPACK}
+
+
+def _cobie_job_dir(job_id: str) -> Path:
+    root = Path(os.getenv("TEMP_UPLOAD_DIR", tempfile.gettempdir())) / "ifctoolkit_cobie_qa" / job_id
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _cleanup_cobie_jobs() -> None:
+    retention = int(os.getenv("FILE_RETENTION_HOURS", "24"))
+    cutoff = time.time() - retention * 3600
+    root = Path(os.getenv("TEMP_UPLOAD_DIR", tempfile.gettempdir())) / "ifctoolkit_cobie_qa"
+    if root.exists():
+        for child in root.iterdir():
+            if child.is_dir() and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+
+
+def _result_payload(result):
+    return result.dict() if hasattr(result, "dict") else result.model_dump()
+
+@app.post("/api/cobie/validate")
+async def cobie_validate(request: Request, file: UploadFile = File(...), rule_pack: str = Form(None)):
+    _cleanup_cobie_jobs()
+    safe_name = sanitize_upload_filename(file.filename or "cobie.xlsx")
+    if not safe_name.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx COBie workbooks are supported")
+    job_id = uuid.uuid4().hex
+    job_dir = _cobie_job_dir(job_id)
+    input_path = job_dir / safe_name
+    written = 0
+    with input_path.open("wb") as dst:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk: break
+            written += len(chunk)
+            if written > MAX_COBIE_UPLOAD_BYTES:
+                input_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"COBie upload exceeds MAX_UPLOAD_MB ({int(MAX_COBIE_UPLOAD_BYTES/(1024*1024))} MB)")
+            dst.write(chunk)
+    started = time.perf_counter()
+    COBIE_QA_JOBS[job_id] = {"job_id": job_id, "status": "running", "progress": 0.4, "message": "Reading workbook", "job_dir": str(job_dir), "input_path": str(input_path), "original_filename": safe_name, "file_size": written}
+    try:
+        selected_rulepack = rule_pack or COBIE_DEFAULT_RULEPACK
+        result = validate_cobie_workbook(input_path, selected_rulepack, job_id=job_id, original_filename=safe_name)
+        report_path = write_cobie_excel_report(result, job_dir / f"{Path(safe_name).stem}_IFCToolkit_COBie_QA_Report.xlsx", file_size=written, environment=os.getenv("APP_ENV", "production"))
+        csv_path = write_cobie_csv(result, job_dir / f"{Path(safe_name).stem}_IFCToolkit_COBie_Issues.csv")
+        exports = {"report_xlsx": report_path.name, "issues_csv": csv_path.name}
+        if COBIE_ENABLE_MARKUP_EXPORT:
+            marked = write_cobie_marked_workbook(input_path, result, job_dir / f"{Path(safe_name).stem}_IFCToolkit_COBie_QA_Marked_Up.xlsx")
+            exports["marked_up_xlsx"] = marked.name
+        result.exports = exports
+        result.processing_duration_seconds = round(time.perf_counter() - started, 3)
+        COBIE_QA_JOBS[job_id].update({"status": "complete", "progress": 1.0, "message": "Complete", "summary": result.summary.dict(), "result": _result_payload(result), "exports": exports})
+        APP_LOGGER.info("cobie_qa_complete job_id=%s file_size=%s duration=%s issues=%s errors=%s warnings=%s", job_id, written, result.processing_duration_seconds, result.summary.total_issues, result.summary.errors, result.summary.warnings)
+        return {"job_id": job_id, "status": "complete", "progress": 1.0, "summary": result.summary.dict(), "exports": exports}
+    except Exception as exc:
+        APP_LOGGER.exception("cobie_qa_failed job_id=%s file_size=%s", job_id, written)
+        COBIE_QA_JOBS[job_id].update({"status": "error", "progress": 1.0, "message": str(exc)})
+        raise HTTPException(status_code=400, detail="COBie validation failed. Confirm the uploaded file is a valid .xlsx workbook.") from exc
+
+@app.get("/api/cobie/jobs/{job_id}")
+def cobie_job(job_id: str):
+    job = COBIE_QA_JOBS.get(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found or expired")
+    return {k:v for k,v in job.items() if k not in {"result", "input_path", "job_dir"}}
+
+@app.get("/api/cobie/jobs/{job_id}/issues")
+def cobie_issues(job_id: str, severity: str = "", sheet: str = "", column: str = "", rule_type: str = "", search: str = "", limit: int = 500, offset: int = 0):
+    job = COBIE_QA_JOBS.get(job_id)
+    if not job or "result" not in job: raise HTTPException(status_code=404, detail="Job not found or expired")
+    issues = list(job["result"].get("issues", []))
+    def keep(i):
+        hay = " ".join(str(i.get(k,"")) for k in ("message","recommendation","actual_value","rule_id"))
+        return (not severity or i.get("severity") == severity) and (not sheet or i.get("sheet_name") == sheet) and (not column or i.get("column_name") == column) and (not rule_type or i.get("rule_type") == rule_type) and (not search or search.lower() in hay.lower())
+    filtered=[i for i in issues if keep(i)]
+    return {"total": len(filtered), "offset": offset, "limit": limit, "issues": filtered[offset:offset+limit]}
+
+@app.get("/api/cobie/jobs/{job_id}/report.xlsx")
+def cobie_report_xlsx(job_id: str):
+    job=COBIE_QA_JOBS.get(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found or expired")
+    name=job.get("exports",{}).get("report_xlsx"); path=Path(job["job_dir"])/name
+    if not path.exists(): raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(str(path), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=name)
+
+@app.get("/api/cobie/jobs/{job_id}/issues.csv")
+def cobie_report_csv(job_id: str):
+    job=COBIE_QA_JOBS.get(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found or expired")
+    name=job.get("exports",{}).get("issues_csv"); path=Path(job["job_dir"])/name
+    if not path.exists(): raise HTTPException(status_code=404, detail="CSV not found")
+    return FileResponse(str(path), media_type="text/csv", filename=name)
+
+@app.get("/api/cobie/jobs/{job_id}/marked-up.xlsx")
+def cobie_marked_xlsx(job_id: str):
+    job=COBIE_QA_JOBS.get(job_id)
+    if not job: raise HTTPException(status_code=404, detail="Job not found or expired")
+    name=job.get("exports",{}).get("marked_up_xlsx")
+    if not name: raise HTTPException(status_code=404, detail="Marked-up workbook export is disabled")
+    path=Path(job["job_dir"])/name
+    if not path.exists(): raise HTTPException(status_code=404, detail="Marked-up workbook not found")
+    return FileResponse(str(path), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=name)
 
 
 @app.get("/tools/cobieqc", response_class=HTMLResponse)
@@ -7227,6 +7348,18 @@ area_spaces_router = build_area_spaces_router(
     files_handler=area_spaces_session_files,
 )
 app.include_router(area_spaces_router)
+
+@app.get("/api/ifc/area-spaces/session-files")
+def area_spaces_session_files_direct(session_id: str):
+    return area_spaces_session_files(session_id)
+
+@app.post("/api/ifc/area-spaces/scan")
+async def area_spaces_scan_direct(payload: Dict[str, Any] = Body(...)):
+    return await area_spaces_scan(payload)
+
+@app.post("/api/ifc/area-spaces/purge")
+async def area_spaces_purge_direct(payload: Dict[str, Any] = Body(...)):
+    return await area_spaces_purge(payload)
 
 
 @app.get("/api/tools/cobieqc/health")
