@@ -1011,46 +1011,20 @@ textarea:focus-visible {
   flex: 0 0 auto;
 }
 
-.brand-mark {
-  width: 44px;
-  height: 44px;
-  overflow: visible;
+.brand-logo {
+  display: block;
+  width: clamp(132px, 18vw, 190px);
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
 }
 
-.brand-layer {
-  stroke: #ffffff;
-  stroke-width: 2;
-  stroke-linejoin: round;
-}
-
-.brand-layer-bottom {
-  fill: #0b132b;
-  opacity: 0.95;
-}
-
-.brand-layer-middle {
-  fill: #1e6fff;
-  opacity: 0.88;
-}
-
-.brand-layer-top {
-  fill: #68a8ff;
-  opacity: 0.9;
-}
-
-.wordmark {
-  font-size: 23px;
-  font-weight: 800;
-  letter-spacing: 0;
-  line-height: 1;
-}
-
-.wordmark span:first-child {
-  color: var(--text);
-}
-
-.wordmark span:last-child {
-  color: var(--accent);
+.brand-logo-stacked {
+  display: block;
+  width: min(100%, 280px);
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
 }
 
 .site-nav {
@@ -1286,53 +1260,6 @@ h3 {
   color: #ffffff;
   padding: 24px;
   min-height: 230px;
-}
-
-.layer-preview {
-  position: relative;
-  width: 164px;
-  height: 130px;
-}
-
-.layer-preview span {
-  position: absolute;
-  left: 50%;
-  width: 120px;
-  height: 72px;
-  border-radius: 18px;
-  transform: translateX(-50%) rotate(45deg) skew(-8deg, -8deg);
-  border: 2px solid rgba(255, 255, 255, 0.65);
-}
-
-.layer-preview span:nth-child(1) {
-  top: 54px;
-  background: rgba(11, 19, 43, 0.95);
-}
-
-.layer-preview span:nth-child(2) {
-  top: 30px;
-  background: rgba(30, 111, 255, 0.86);
-}
-
-.layer-preview span:nth-child(3) {
-  top: 6px;
-  background: rgba(104, 168, 255, 0.9);
-}
-
-.hero-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  text-align: center;
-}
-
-.hero-metric strong {
-  font-size: 18px;
-}
-
-.hero-metric span {
-  color: #cfe0f7;
-  font-size: 13px;
 }
 
 .trust-strip {
@@ -1786,13 +1713,8 @@ details.collapsible,
     width: min(100% - 24px, 1240px);
   }
 
-  .brand-mark {
-    width: 38px;
-    height: 38px;
-  }
-
-  .wordmark {
-    font-size: 20px;
+  .brand-logo {
+    width: clamp(112px, 34vw, 152px);
   }
 
   .session-badge {
