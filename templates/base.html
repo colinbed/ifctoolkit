@@ -12,7 +12,7 @@
         <div class="site-header-inner">
           {% include "partials/brand.html" %}
           <nav class="site-nav" aria-label="Primary navigation">
-            <a class="nav-link nav-root-link {% if active=='upload' %}active{% endif %}" href="/">Upload</a>
+            <a class="nav-link nav-root-link {% if active=='upload' %}active{% endif %}" href="/app">Upload</a>
             <details class="nav-dropdown">
               <summary class="nav-dropdown-summary">Tools</summary>
               <div class="nav-dropdown-menu">
@@ -44,6 +44,7 @@
               </div>
             </details>
             <a class="nav-link nav-root-link {% if active=='files' %}active{% endif %}" href="/files">Reports</a>
+            <a class="nav-link nav-root-link" href="/">Public Site</a>
             <details class="nav-dropdown">
               <summary class="nav-dropdown-summary">Resources</summary>
               <div class="nav-dropdown-menu">

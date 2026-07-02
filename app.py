@@ -6435,6 +6435,19 @@ templates.env.globals["resolve_asset_url"] = resolve_asset_url
 templates.env.globals["frontend_build_id"] = FRONTEND_BUILD_ID
 
 
+PUBLIC_PAGES = {
+    "home": {
+        "path": "/", "active": "home", "title": "Practical IFC tools, built for compliance.",
+        "subtitle": "Clean, validate and improve IFC, COBie and project information using straightforward tools designed for construction information managers, BIM teams and digital delivery leads.",
+    },
+    "tools": {"path":"/tools","active":"tools","title":"Practical tools for real-world information delivery.","subtitle":"Focused utilities for checking, cleaning, transforming and improving IFC and handover data."},
+    "resources": {"path":"/resources","active":"resources","title":"Resources for BIM and information management teams.","subtitle":"Templates, checklists and practical guidance to help teams structure, validate and improve project information."},
+    "pricing": {"path":"/pricing","active":"pricing","title":"Simple pricing for practical information QA.","subtitle":"Start with free tools, then upgrade as your projects, teams and reporting needs grow."},
+    "compliance-security": {"path":"/compliance-security","active":"compliance-security","title":"Built for information you can trust.","subtitle":"Protecting project data through secure design, temporary processing and transparent information handling."},
+    "about": {"path":"/about","active":"about","title":"Built by information management practitioners. Focused on better project data.","subtitle":"IFC Toolkit was created to make IFC, COBie and digital handover checking more practical, transparent and repeatable."},
+    "contact": {"path":"/contact","active":"contact","title":"Talk to IFC Toolkit.","subtitle":"Questions, feedback, feature requests or partnership ideas — get in touch."},
+}
+
 @app.middleware("http")
 async def upload_request_size_guard(request: Request, call_next):
     upload_paths = {
@@ -6524,7 +6537,17 @@ def upload_limits():
 
 
 @app.get("/", response_class=HTMLResponse)
+def marketing_home_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/home.html", context={"request": request, "page": PUBLIC_PAGES["home"]})
+
+
+@app.get("/app", response_class=HTMLResponse)
 def upload_page(request: Request):
+    return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
+
+
+@app.get("/app/dashboard", response_class=HTMLResponse)
+def app_dashboard_page(request: Request):
     return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
 
 
@@ -6596,6 +6619,36 @@ def presentation_layer_page(request: Request):
 @app.get("/step2ifc", response_class=HTMLResponse)
 def step2ifc_page(request: Request):
     return templates.TemplateResponse(request=request, name="step2ifc.html", context={"request": request, "active": "step2ifc"})
+
+
+@app.get("/tools", response_class=HTMLResponse)
+def marketing_tools_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/tools.html", context={"request": request, "page": PUBLIC_PAGES["tools"]})
+
+
+@app.get("/resources", response_class=HTMLResponse)
+def marketing_resources_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/resources.html", context={"request": request, "page": PUBLIC_PAGES["resources"]})
+
+
+@app.get("/pricing", response_class=HTMLResponse)
+def marketing_pricing_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/pricing.html", context={"request": request, "page": PUBLIC_PAGES["pricing"]})
+
+
+@app.get("/compliance-security", response_class=HTMLResponse)
+def marketing_compliance_security_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/compliance_security.html", context={"request": request, "page": PUBLIC_PAGES["compliance-security"]})
+
+
+@app.get("/about", response_class=HTMLResponse)
+def marketing_about_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/about.html", context={"request": request, "page": PUBLIC_PAGES["about"]})
+
+
+@app.get("/contact", response_class=HTMLResponse)
+def marketing_contact_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/contact.html", context={"request": request, "page": PUBLIC_PAGES["contact"]})
 
 
 @app.get("/tools/cobieqc", response_class=HTMLResponse)
