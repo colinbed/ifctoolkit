@@ -994,12 +994,14 @@ textarea:focus-visible {
 }
 
 .site-header-inner {
-  width: min(1440px, calc(100% - 40px));
-  margin: 0 auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 8px 20px;
   display: flex;
   align-items: center;
-  gap: 24px;
-  min-height: 78px;
+  gap: 14px;
+  min-height: 58px;
 }
 
 .brand {
@@ -1009,30 +1011,37 @@ textarea:focus-visible {
   color: var(--text);
   text-decoration: none;
   flex: 0 0 auto;
+  max-width: 140px;
 }
 
 .brand-logo {
   display: block;
-  width: clamp(132px, 18vw, 190px);
-  max-width: 100%;
+  width: 128px;
+  max-width: 128px;
+  max-height: 38px;
   height: auto;
   object-fit: contain;
 }
 
 .brand-logo-stacked {
   display: block;
-  width: min(100%, 280px);
+  width: min(100%, 220px);
   max-width: 100%;
+  max-height: 170px;
   height: auto;
   object-fit: contain;
 }
 
 .site-nav {
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
+  margin: 0;
+  overflow: visible;
 }
 
 .nav-link,
@@ -1040,13 +1049,13 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 9px 12px;
+  min-height: 34px;
+  padding: 7px 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--deep-navy);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
   text-decoration: none;
   transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
@@ -1084,7 +1093,7 @@ textarea:focus-visible {
 .nav-dropdown-menu {
   position: absolute;
   left: 0;
-  top: calc(100% + 10px);
+  top: calc(100% + 8px);
   min-width: 260px;
   z-index: 40;
   display: flex;
@@ -1096,6 +1105,16 @@ textarea:focus-visible {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 20px 44px rgba(8, 27, 58, 0.16);
+}
+
+.site-nav .nav-dropdown .nav-link {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.site-nav .nav-dropdown .nav-link:hover {
+  border-color: #d9e8ff;
 }
 
 .nav-child {
@@ -1140,12 +1159,13 @@ textarea:focus-visible {
 .session-badge {
   flex: 0 0 auto;
   align-self: auto;
+  margin-left: auto;
   border: 1px solid #cbd5e1;
   background: #f8fafc;
   color: #475569;
   border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 13px;
+  padding: 6px 10px;
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -1675,16 +1695,22 @@ details.collapsible,
 
 @media (max-width: 1180px) {
   .site-header-inner {
-    align-items: flex-start;
+    align-items: center;
     flex-wrap: wrap;
-    padding: 14px 0;
+    padding: 8px 16px;
   }
 
   .site-nav {
     order: 3;
     width: 100%;
-    overflow-x: auto;
-    padding-bottom: 4px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .session-badge {
+    margin-left: 0;
   }
 }
 
@@ -1713,17 +1739,35 @@ details.collapsible,
     width: min(100% - 24px, 1240px);
   }
 
+  .site-header-inner {
+    width: 100%;
+    padding: 8px 12px;
+  }
+
   .brand-logo {
-    width: clamp(112px, 34vw, 152px);
+    width: 116px;
+    max-width: 116px;
+    max-height: 34px;
   }
 
   .session-badge {
-    width: 100%;
-    text-align: center;
+    width: auto;
+    max-width: 100%;
+    text-align: left;
   }
 
   .site-nav {
-    align-items: stretch;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .nav-link,
+  .nav-dropdown-summary {
+    min-height: 32px;
+    padding: 6px 8px;
+    font-size: 12px;
   }
 
   .nav-dropdown {
