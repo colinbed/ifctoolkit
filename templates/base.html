@@ -3,110 +3,63 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IFC Toolkit Hub</title>
+    <title>IFC Toolkit</title>
     <link rel="stylesheet" href="{{ asset_url('style.css') }}" />
   </head>
   <body>
-    <div class="wrap">
-      <nav>
-        <div class="nav-header">
-          <div class="logo">IFC Toolkit</div>
-          <div class="tagline">
-            Local-first workflows for IFC cleaning, Excel round-tripping, storey adjustments, and proxy remapping.
-          </div>
+    <div class="app-shell">
+      <header class="site-header">
+        <div class="site-header-inner">
+          {% include "partials/brand.html" %}
+          <nav class="site-nav" aria-label="Primary navigation">
+            <a class="nav-link nav-root-link {% if active=='upload' %}active{% endif %}" href="/">Upload</a>
+            <details class="nav-dropdown">
+              <summary class="nav-dropdown-summary">Tools</summary>
+              <div class="nav-dropdown-menu">
+                <a class="nav-link nav-child {% if active=='excel' %}active{% endif %}" href="/excel">IFC to Excel</a>
+                <a class="nav-link nav-child {% if active=='cleaner' %}active{% endif %}" href="/cleaner">Pset Purge</a>
+                <a class="nav-link nav-child {% if active=='storeys' %}active{% endif %}" href="/storeys">Storey & Global Z Control</a>
+                <a class="nav-link nav-child {% if active=='levels' %}active{% endif %}" href="/levels">Level Manager</a>
+                <a class="nav-link nav-child {% if active=='proxy' %}active{% endif %}" href="/proxy">Proxy to IFCClass</a>
+                <a class="nav-link nav-child {% if active=='cobieqc' %}active{% endif %}" href="/tools/cobieqc">COBie QC</a>
+                <a class="nav-link nav-child {% if active=='presentation-layer' %}active{% endif %}" href="/presentation-layer">Presentation Layer Alignment</a>
+                <a class="nav-link nav-child {% if active=='reduce-file-size' %}active{% endif %}" href="/tools/reduce-file-size">IFC File Size Reducer</a>
+                <a class="nav-link nav-child {% if active=='purge-area-spaces' %}active{% endif %}" href="/tools/purge-area-spaces">Purge Area Spaces</a>
+              </div>
+            </details>
+            <details class="nav-dropdown">
+              <summary class="nav-dropdown-summary">IFC Data QA</summary>
+              <div class="nav-dropdown-menu">
+                <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='extractor' %}active{% endif %}" href="/ifc-qa/extractor">Extractor</a>
+                <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='dashboard' %}active{% endif %}" href="/ifc-qa/dashboard">Dashboard</a>
+                <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='config' %}active{% endif %}" href="/ifc-qa/config">Config</a>
+              </div>
+            </details>
+            <details class="nav-dropdown">
+              <summary class="nav-dropdown-summary">WIP <span class="nav-preview-badge">Preview</span></summary>
+              <div class="nav-dropdown-menu">
+                <a class="nav-link nav-child {% if active=='ifc-move-rotate' %}active{% endif %}" href="/wip/ifc-move-rotate">IFC Move / Rotate</a>
+                <a class="nav-link nav-child {% if active=='step2ifc' %}active{% endif %}" href="/step2ifc">STEP to IFC</a>
+                <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">Model Checking</a>
+              </div>
+            </details>
+            <a class="nav-link nav-root-link {% if active=='files' %}active{% endif %}" href="/files">Reports</a>
+            <details class="nav-dropdown">
+              <summary class="nav-dropdown-summary">Resources</summary>
+              <div class="nav-dropdown-menu">
+                <a class="nav-link nav-child" href="/files">Session Files</a>
+                <a class="nav-link nav-child {% if active=='presentation-layer' %}active{% endif %}" href="/presentation-layer">Presentation Layer</a>
+                <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">Model Checking</a>
+              </div>
+            </details>
+            <a class="nav-link nav-root-link {% if active=='mappings' %}active{% endif %}" href="/admin/mappings">Settings</a>
+          </nav>
+          <div class="session-badge" data-session-badge>Session establishing...</div>
         </div>
-        <div class="nav-tree" aria-label="Tool navigation">
-          <details class="nav-dropdown" open>
-            <summary class="nav-dropdown-summary">
-              <span class="nav-hamburger" aria-hidden="true">☰</span>
-              <a class="nav-link nav-root-link {% if active=='upload' %}active{% endif %}" href="/">
-                Upload & Session
-              </a>
-            </summary>
-            <div class="nav-dropdown-menu">
-              <a class="nav-link nav-child {% if active=='files' %}active{% endif %}" href="/files">
-                Session Files Download
-              </a>
-            </div>
-          </details>
-          <details class="nav-dropdown">
-            <summary class="nav-dropdown-summary">
-              <span class="nav-hamburger" aria-hidden="true">☰</span>
-              <span class="nav-link nav-root-link nav-label">Tools</span>
-            </summary>
-            <div class="nav-dropdown-menu">
-              <a class="nav-link nav-child {% if active=='excel' %}active{% endif %}" href="/excel">
-                IFC to Excel (Extract and Update)
-              </a>
-              <a class="nav-link nav-child {% if active=='cleaner' %}active{% endif %}" href="/cleaner">
-                Pset Purge (Cleaner)
-              </a>
-              <a class="nav-link nav-child {% if active=='storeys' %}active{% endif %}" href="/storeys">
-                Storey & Global Z Control
-              </a>
-              <a class="nav-link nav-child {% if active=='levels' %}active{% endif %}" href="/levels">
-                Level Manager
-              </a>
-              <a class="nav-link nav-child {% if active=='proxy' %}active{% endif %}" href="/proxy">
-                Proxy to IFCClass
-              </a>
-              <a class="nav-link nav-child {% if active=='cobieqc' %}active{% endif %}" href="/tools/cobieqc">
-                COBie QC
-              </a>
-              <a class="nav-link nav-child {% if active=='presentation-layer' %}active{% endif %}" href="/presentation-layer">
-                Presentation Layer Alignment
-              </a>
-              <a class="nav-link nav-child {% if active=='ifc-move-rotate' %}active{% endif %}" href="/wip/ifc-move-rotate">
-                IFC Move / Rotate
-              </a>
-              <a class="nav-link nav-child {% if active=='reduce-file-size' %}active{% endif %}" href="/tools/reduce-file-size">
-                IFC File Size Reducer
-              </a>
-              <a class="nav-link nav-child {% if active=='purge-area-spaces' %}active{% endif %}" href="/tools/purge-area-spaces">
-                Purge Area Spaces
-              </a>
-            </div>
-          </details>
-          <details class="nav-dropdown">
-            <summary class="nav-dropdown-summary">
-              <span class="nav-hamburger" aria-hidden="true">☰</span>
-              <span class="nav-link nav-root-link nav-label">IFC Data QA</span>
-            </summary>
-            <div class="nav-dropdown-menu">
-              <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='extractor' %}active{% endif %}" href="/ifc-qa/extractor">
-                Extractor
-              </a>
-              <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='dashboard' %}active{% endif %}" href="/ifc-qa/dashboard">
-                Dashboard
-              </a>
-              <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='config' %}active{% endif %}" href="/ifc-qa/config">
-                Config
-              </a>
-            </div>
-          </details>
-          <details class="nav-dropdown">
-            <summary class="nav-dropdown-summary">
-              <span class="nav-hamburger" aria-hidden="true">☰</span>
-              <span class="nav-link nav-root-link nav-label">WIP</span>
-            </summary>
-            <div class="nav-dropdown-menu">
-              <a class="nav-link nav-child {% if active=='step2ifc' %}active{% endif %}" href="/step2ifc">
-                STEP to IFC
-              </a>
-              <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">
-                Model Checking
-              </a>
-              <a class="nav-link nav-child {% if active=='mappings' %}active{% endif %}" href="/admin/mappings">
-                Admin / Mapping
-              </a>
-            </div>
-          </details>
-        </div>
-        <div class="session-badge" data-session-badge>Session establishing…</div>
-      </nav>
+      </header>
 
       <div class="processing-bar" data-processing-bar aria-live="polite">
-        <div class="processing-label" data-processing-label>Processing files…</div>
+        <div class="processing-label" data-processing-label>Processing files...</div>
         <div class="processing-track" role="progressbar" aria-valuetext="Processing">
           <div class="processing-fill"></div>
         </div>
