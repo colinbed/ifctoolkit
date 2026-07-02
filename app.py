@@ -6442,9 +6442,11 @@ PUBLIC_PAGES = {
     },
     "tools": {"path":"/tools","active":"tools","title":"Practical tools for real-world information delivery.","subtitle":"Focused utilities for checking, cleaning, transforming and improving IFC and handover data."},
     "resources": {"path":"/resources","active":"resources","title":"Resources for BIM and information management teams.","subtitle":"Templates, checklists and practical guidance to help teams structure, validate and improve project information."},
-    "pricing": {"path":"/pricing","active":"pricing","title":"Simple pricing for practical information QA.","subtitle":"Start with free tools, then upgrade as your projects, teams and reporting needs grow."},
-    "compliance-security": {"path":"/compliance-security","active":"compliance-security","title":"Built for information you can trust.","subtitle":"Protecting project data through secure design, temporary processing and transparent information handling."},
-    "about": {"path":"/about","active":"about","title":"Built by information management practitioners. Focused on better project data.","subtitle":"IFC Toolkit was created to make IFC, COBie and digital handover checking more practical, transparent and repeatable."},
+    "documentation": {"path":"/documentation","active":"documentation","title":"Documentation","subtitle":"Find practical guidance for preparing IFC files, running checks, reviewing results, and using extracted data to support information management, COBie, and digital handover workflows.", "description": "Guidance for using IFC Toolkit to prepare IFC files, run checks, review outputs and support BIM information management workflows."},
+    "pricing": {"path":"/pricing","active":"pricing","title":"Pricing","subtitle":"Choose the level of access that fits your workflow, from occasional IFC checks to project and organisation-wide information management support.", "description": "Indicative IFC Toolkit pricing for free, professional, project and enterprise IFC validation and data extraction workflows."},
+    "compliance": {"path":"/compliance","active":"compliance","title":"Compliance and Information Security","subtitle":"IFC Toolkit is being developed with information security, structured data management, and construction information standards in mind.", "description": "How IFC Toolkit approaches information security, data handling and standards-aligned IFC, COBie and BIM compliance workflows."},
+    "compliance-security": {"path":"/compliance-security","active":"compliance","title":"Compliance and Information Security","subtitle":"IFC Toolkit is being developed with information security, structured data management, and construction information standards in mind.", "description": "How IFC Toolkit approaches information security, data handling and standards-aligned IFC, COBie and BIM compliance workflows."},
+    "about": {"path":"/about","active":"about","title":"About IFC Toolkit","subtitle":"IFC Toolkit helps project teams check, extract, validate, and improve IFC data without relying on heavyweight authoring software or manual spreadsheet workflows. It is built for real construction delivery, where information needs to be structured, traceable, and usable.", "description": "About IFC Toolkit, a practical web-based platform for checking, extracting, validating and improving IFC and BIM data."},
     "contact": {"path":"/contact","active":"contact","title":"Talk to IFC Toolkit.","subtitle":"Questions, feedback, feature requests or partnership ideas — get in touch."},
 }
 
@@ -6541,6 +6543,7 @@ def marketing_home_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/home.html", context={"request": request, "page": PUBLIC_PAGES["home"]})
 
 
+@app.get("/upload", response_class=HTMLResponse)
 @app.get("/app", response_class=HTMLResponse)
 def upload_page(request: Request):
     return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
@@ -6631,9 +6634,19 @@ def marketing_resources_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/resources.html", context={"request": request, "page": PUBLIC_PAGES["resources"]})
 
 
+@app.get("/documentation", response_class=HTMLResponse)
+def marketing_documentation_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/documentation.html", context={"request": request, "page": PUBLIC_PAGES["documentation"]})
+
+
 @app.get("/pricing", response_class=HTMLResponse)
 def marketing_pricing_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/pricing.html", context={"request": request, "page": PUBLIC_PAGES["pricing"]})
+
+
+@app.get("/compliance", response_class=HTMLResponse)
+def marketing_compliance_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/compliance.html", context={"request": request, "page": PUBLIC_PAGES["compliance"]})
 
 
 @app.get("/compliance-security", response_class=HTMLResponse)

@@ -1,1 +1,36 @@
-{% extends "public/base.html" %}{% import "public/macros.html" as ui %}{% block content %}{{ ui.hero(page) }}<section class="public-section"><h2>Making compliance easier. Information better.</h2><p>Too much time is lost to manual checks, inconsistent requirements and unclear model data. IFC Toolkit exists to reduce repetitive work, improve visibility of information issues and help teams deliver better structured project information.</p><h2>Why we exist</h2><p>The construction industry has strong standards, but project teams often lack simple tools for applying them consistently. IFC Toolkit brings practical validation, transformation and QA utilities into one accessible platform.</p>{{ ui.cards([('Practical','Tools should solve real project problems and fit the way delivery teams actually work.'),('Reliable','Checks should be clear, repeatable and based on transparent logic.'),('Transparent','Users should understand what has been checked, what has failed and what needs action.'),('Independent','The platform should support openBIM and structured information quality across the industry.')]) }}</section><section class="trust-strip"><span>Information Managers</span><span>BIM Managers</span><span>Digital Construction teams</span><span>Design consultants</span><span>Contractors</span><span>Asset owners</span><span>Project controls teams</span></section>{{ ui.cta('Explore the tools.') }}{% endblock %}
+{% extends "public/base.html" %}
+{% import "public/macros.html" as ui %}
+{% block content %}
+{{ ui.hero(page, 'Read the documentation', secondary_href='/documentation') }}
+<section class="public-section">
+  <h2>What IFC Toolkit does</h2>
+  <p>IFC Toolkit gives delivery teams practical ways to inspect model data, check information quality and prepare better structured IFC and COBie submissions.</p>
+  {{ ui.cards([
+    ('IFC checking','Review IFC files for structure, naming, entity use, classifications and property data. Help teams identify issues before formal delivery or client review.'),
+    ('Data extraction','Extract useful IFC data into structured formats such as Excel or CSV so information managers can interrogate model data without opening full authoring tools.'),
+    ('COBie and asset data support','Review asset information, properties, classifications and handover-related data. IFC Toolkit supports structured handover rather than replacing project-specific requirements.'),
+    ('Practical workflow support','Work through common project issues such as missing parameters, inconsistent naming, proxy entities, classification gaps and poor export quality.')
+  ]) }}
+</section>
+<section class="public-section">
+  <h2>Who it is for</h2>
+  <div class="trust-strip audience-strip"><span>Information Managers</span><span>BIM Managers</span><span>Digital Construction teams</span><span>Design Managers</span><span>Contractors</span><span>Consultants</span><span>Client-side asset and estates teams</span></div>
+</section>
+<section class="public-section split">
+  <div>
+    <h2>Why it exists</h2>
+    <p>Many BIM validation workflows are fragmented across authoring tools, spreadsheets, manual checks and specialist software. IFC Toolkit aims to make common checks easier, faster and more transparent.</p>
+  </div>
+  <article class="public-card">
+    <h3>Built for practical delivery</h3>
+    <ul>
+      <li>Reduce repetitive manual checks.</li>
+      <li>Improve visibility of model data.</li>
+      <li>Support consistent information delivery.</li>
+      <li>Help teams prepare better IFC and COBie submissions.</li>
+      <li>Make IFC data easier to understand and use.</li>
+    </ul>
+  </article>
+</section>
+<section class="cta-band"><h2>Start checking your IFC data</h2><div class="public-actions"><a class="public-button" href="/tools">View tools</a><a class="public-button secondary" href="/documentation">Read the documentation</a></div></section>
+{% endblock %}
