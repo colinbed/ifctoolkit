@@ -1,32 +1,35 @@
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: ifctoolkit
+
 spec:
   replicas: 1
+
   selector:
     matchLabels:
       app: ifctoolkit
+
   template:
     metadata:
       labels:
         app: ifctoolkit
-    spec:
-      containers:
-        - name: ifctoolkit
-          image: ghcr.io/colinbed/ifctoolkit:latest
-          ports:
-            - containerPort: 8000
-          env:
-            - name: APP_URL
-              value: "https://ifctoolkit.com"
-            - name: FILE_RETENTION_MINUTES
-              value: "30"
-    spec:
-  template:
+
     spec:
       imagePullSecrets:
         - name: ghcr-secret
+
       containers:
         - name: ifctoolkit
           image: ghcr.io/colinbed/ifctoolkit:latest
+
+          ports:
+            - containerPort: 8000
+
+          env:
+            - name: APP_URL
+              value: "https://ifctoolkit.com"
+
+            - name: FILE_RETENTION_MINUTES
+              value: "30"
