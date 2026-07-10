@@ -1,1 +1,61 @@
-{% extends "public/base.html" %}{% import "public/macros.html" as ui %}{% block content %}{{ ui.hero(page) }}<section class="public-section"><p>IFC Toolkit is built around small, useful tools that solve specific information management problems. Use them independently or as part of a wider QA workflow.</p>{{ ui.cards([('IFC Validator','Review IFC structure, hierarchy, attributes, object naming, classifications and property completeness.','Best for: Pre-issue checks, model QA, digital handover preparation.'),('COBie QA / QC','Check COBie data for missing values, relationship issues and handover readiness.','Best for: Asset data reviews, client submissions, handover QA.'),('IFC to Excel','Extract IFC model data to Excel for review, correction and round-tripping.','Best for: Data review workshops, bulk updates, structured QA.'),('Property Set Review','Identify missing, empty or inconsistent property sets across model elements.','Best for: Employer requirements, asset data checks, information completeness.'),('Classification Audit','Check model elements for Uniclass/classification completeness and consistency.','Best for: Standardised data delivery and structured reporting.'),('Pset Purge / Cleaner','Clean unwanted, duplicated or non-required property data from IFC files.','Best for: Reducing noise and improving data quality.'),('Storey & Global Z Control','Review and adjust storey data, level naming and global positioning outputs.','Best for: Model coordination, project setup and IFC correction.'),('Proxy to IFCClass','Map generic proxy objects to more appropriate IFC classes where rule-based conversion is possible.','Best for: Improving IFC structure and downstream usability.'),('IFC Data QA','Extract, configure and review model data against project-specific QA rules.','Best for: Repeatable validation and information management reporting.')]) }}</section>{{ ui.cta('Need a focused IFC or COBie check?') }}{% endblock %}
+{% extends "public/base.html" %}
+{% import "public/macros.html" as ui %}
+{% block content %}
+{{ ui.hero(page) }}
+<section class="public-section">
+  <p>IFC Toolkit is built around small, useful tools that solve specific information management problems. Use them independently or as part of a wider QA workflow.</p>
+  <div class="public-grid public-tool-grid">
+    <a class="public-card public-tool-card" href="/app">
+      <h3>Uploads &amp; Session</h3>
+      <p>Start a session, upload files, and reuse them across the toolkit.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/excel">
+      <h3>IFC to Excel</h3>
+      <p>Extract IFC model data to Excel for review, correction and round-tripping.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/cleaner">
+      <h3>Pset Purge / Cleaner</h3>
+      <p>Clean unwanted, duplicated or non-required property data from IFC files.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/storeys">
+      <h3>Storey &amp; Global Z Control</h3>
+      <p>Review and adjust storey data, level naming and global positioning outputs.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/proxy">
+      <h3>Proxy to IFCClass</h3>
+      <p>Map generic proxy objects to more appropriate IFC classes where rule-based conversion is possible.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/tools/cobieqc">
+      <h3>COBie QC</h3>
+      <p>Run the COBie QC workflow for COBie workbook and handover checks.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/tools/cobie-qa">
+      <h3>COBie QA / QC</h3>
+      <p>Check COBie data for missing values, relationship issues and handover readiness.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/ifc-qa/extractor">
+      <h3>IFC Data QA</h3>
+      <p>Extract, configure and review model data against project-specific QA rules.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/tools/reduce-file-size">
+      <h3>IFC File Size Reducer</h3>
+      <p>Analyse and reduce IFC file size where safe simplification is available.</p>
+      <span>Open tool →</span>
+    </a>
+    <a class="public-card public-tool-card" href="/tools/purge-area-spaces">
+      <h3>Purge Area Spaces</h3>
+      <p>Remove area calculation spaces from IFC files for cleaner downstream exchange.</p>
+      <span>Open tool →</span>
+    </a>
+  </div>
+</section>
+{{ ui.cta('Need a focused IFC or COBie check?') }}
+{% endblock %}
