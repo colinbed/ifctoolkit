@@ -18,14 +18,26 @@ def test_route_list_includes_shared_session_upload_paths():
     assert "/api/session/{session_id}/upload" in route_paths
 
 
-def test_get_files_for_new_session_creates_directory_and_returns_empty_list():
-    session_id = uuid.uuid4().hex
+def test_get_files_for_created_session_returns_empty_list():
+    session_id = app.SESSION_STORE.create()
     payload = app.list_files(session_id)
     assert payload["files"] == []
 
 
-def test_upload_then_list_files_roundtrip():
+def test_get_files_for_unknown_session_returns_404_without_creating_directory():
     session_id = uuid.uuid4().hex
+    path = app.SESSION_STORE.session_path(session_id)
+    try:
+        app.list_files(session_id)
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("Expected HTTPException for unknown session id")
+    assert not app.os.path.exists(path)
+
+
+def test_upload_then_list_files_roundtrip():
+    session_id = app.SESSION_STORE.create()
     uploaded = asyncio.run(app.upload_files(session_id, [_upload("sample.ifc", b"ISO-10303-21;\n")]))
     assert uploaded["files"][0]["id"] == "sample.ifc"
 

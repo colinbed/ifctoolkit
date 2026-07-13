@@ -144,6 +144,9 @@ HASHED_STATIC_DIR = STATIC_DIR / "_hashed"
 HASHED_NAME_RE = re.compile(r"\.[0-9a-f]{8,}\.")
 ASSET_VERSIONED_FILES = ("app.js", "ifc_qa_app.js", "session_shared.js", "style.css", "cobie_qa.js")
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+APP_TEMP_ROOT = Path(os.getenv("APP_TEMP_ROOT", "/tmp/ifctoolkit"))
+MIN_READY_TEMP_FREE_BYTES = int(os.getenv("MIN_READY_TEMP_FREE_BYTES", str(512 * 1024 * 1024)))
+
 
 
 IFC_QA_JOB_STARTER = start_ifc_qa_session_job
@@ -166,7 +169,7 @@ def resolve_server_host_port() -> tuple[str, int]:
 
 
 def _resolve_git_commit_sha() -> str:
-    env_sha = os.getenv("GIT_COMMIT_SHA", "").strip()
+    env_sha = (os.getenv("DEPLOYED_GIT_SHA", "").strip() or os.getenv("GIT_COMMIT_SHA", "").strip())
     if env_sha:
         return env_sha
     try:
@@ -370,16 +373,24 @@ def _require_valid_session_id(session_id: str) -> str:
 
 def _ensure_session_dir_for_upload(session_id: str) -> str:
     normalized = _require_valid_session_id(session_id)
-    root = SESSION_STORE.session_path(normalized)
-    os.makedirs(root, exist_ok=True)
-    SESSION_STORE.sessions[normalized] = utc_now()
-    return root
+    return SESSION_STORE.ensure(normalized)
+
+
+def _read_file_retention_ttl() -> datetime.timedelta:
+    raw = os.getenv("FILE_RETENTION_MINUTES", "360").strip()
+    try:
+        minutes = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("FILE_RETENTION_MINUTES must be an integer number of minutes") from exc
+    if minutes < 5 or minutes > 24 * 60:
+        raise RuntimeError("FILE_RETENTION_MINUTES must be between 5 and 1440 minutes")
+    return datetime.timedelta(minutes=minutes)
 
 
 class SessionStore:
-    def __init__(self, base_dir: str, ttl_hours: int = 6) -> None:
+    def __init__(self, base_dir: str, ttl: Optional[datetime.timedelta] = None) -> None:
         self.base_dir = base_dir
-        self.ttl_hours = ttl_hours
+        self.ttl = ttl or _read_file_retention_ttl()
         os.makedirs(self.base_dir, exist_ok=True)
         self.sessions: Dict[str, datetime.datetime] = {}
 
@@ -409,7 +420,7 @@ class SessionStore:
         return False
 
     def cleanup_stale(self) -> None:
-        cutoff = utc_now() - datetime.timedelta(hours=self.ttl_hours)
+        cutoff = utc_now() - self.ttl
         stale = [sid for sid, ts in self.sessions.items() if ts < cutoff]
         for sid in stale:
             self.drop(sid)
@@ -431,7 +442,7 @@ class SessionStore:
         return self.session_path(session_id)
 
 
-SESSION_STORE = SessionStore(os.path.join(tempfile.gettempdir(), "ifc_app_sessions"))
+SESSION_STORE = SessionStore(str(APP_TEMP_ROOT / "sessions"))
 STEP2IFC_JOBS: Dict[str, Dict[str, Any]] = {}
 DATA_EXTRACT_JOBS: Dict[str, Dict[str, Any]] = {}
 IFC_QA_JOBS: Dict[str, Dict[str, Any]] = {}
@@ -6318,6 +6329,8 @@ def _run_cobieqc_job(job_id: str) -> None:
 
 def startup_cleanup() -> None:
     SESSION_STORE.cleanup_stale()
+    temp_status = _temp_root_status()
+    APP_LOGGER.info("Temporary storage root=%s total_bytes=%s free_bytes=%s session_ttl_seconds=%s max_upload_bytes=%s max_request_body_bytes=%s", temp_status["path_configured"], temp_status["total_bytes"], temp_status["free_bytes"], int(SESSION_STORE.ttl.total_seconds()), MAX_UPLOAD_BYTES, MAX_REQUEST_BODY_BYTES)
     COBIEQC_JOB_STORE.cleanup_old_jobs()
     host, port = resolve_server_host_port()
     APP_LOGGER.info("Startup network binding host=%s port=%s", host, port)
@@ -6387,8 +6400,7 @@ def startup_cleanup() -> None:
 
 
 def shutdown_cleanup() -> None:
-    for sid in list(SESSION_STORE.sessions.keys()):
-        SESSION_STORE.drop(sid)
+    APP_LOGGER.info("Shutdown complete; preserving local sessions for possible same-pod container restart")
 
 
 def _collect_session_route_lines() -> List[str]:
@@ -6502,6 +6514,41 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     if exc.status_code == 413 and isinstance(exc.detail, dict) and exc.detail.get("code") == "UPLOAD_TOO_LARGE":
         return JSONResponse(status_code=413, content=exc.detail)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+def _temp_root_status() -> Dict[str, Any]:
+    APP_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    probe = APP_TEMP_ROOT / ".write-probe"
+    probe.write_text("ok")
+    probe.unlink(missing_ok=True)
+    usage = shutil.disk_usage(APP_TEMP_ROOT)
+    return {
+        "path_configured": str(APP_TEMP_ROOT),
+        "total_bytes": usage.total,
+        "free_bytes": usage.free,
+        "min_ready_free_bytes": MIN_READY_TEMP_FREE_BYTES,
+    }
+
+
+@app.get("/health/live")
+def health_live():
+    return {"status": "ok", "service": "ifc-tools", "git_sha": GIT_SHA}
+
+
+@app.get("/health/ready")
+def health_ready():
+    try:
+        temp_status = _temp_root_status()
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "temp_root_unavailable", "detail": str(exc)})
+    if temp_status["free_bytes"] < temp_status["min_ready_free_bytes"]:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "insufficient_temp_storage", "temp": temp_status})
+    return {"status": "ready", "service": "ifc-tools", "git_sha": GIT_SHA, "temp": temp_status}
+
+
+@app.get("/health/build-info")
+def health_build_info():
+    return {"git_sha": GIT_SHA, "frontend_build_id": FRONTEND_BUILD_ID}
 
 
 @app.get("/health")
@@ -6844,7 +6891,7 @@ def create_session(payload: Dict[str, Any] = Body(default=None)):
     else:
         session_id = SESSION_STORE.create()
         APP_LOGGER.info("session_created session_id=%s root=%s", session_id, SESSION_STORE.session_path(session_id))
-    expiry = utc_now() + datetime.timedelta(hours=SESSION_STORE.ttl_hours)
+    expiry = utc_now() + SESSION_STORE.ttl
     return {"session_id": session_id, "expires_at": expiry.isoformat() + "Z"}
 
 
@@ -6854,11 +6901,10 @@ def get_session(session_id: str):
     root = _ensure_session_dir_for_upload(normalized)
     APP_LOGGER.info("session_lookup session_id=%s", session_id)
     files = [name for name in os.listdir(root) if os.path.isfile(os.path.join(root, name))]
-    expiry = utc_now() + datetime.timedelta(hours=SESSION_STORE.ttl_hours)
+    expiry = utc_now() + SESSION_STORE.ttl
     return {
         "session_id": session_id,
         "expires_at": expiry.isoformat() + "Z",
-        "upload_root": root,
         "file_count": len(files),
     }
 
@@ -6923,6 +6969,8 @@ def delete_session_file(session_id: str, file_id: str):
 
 @app.get("/api/session/{session_id}/debug")
 def session_debug(session_id: str):
+    if os.getenv("ENABLE_SESSION_DEBUG_ENDPOINTS", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=404, detail="Not found")
     normalized = _require_valid_session_id(session_id)
     root = Path(_ensure_session_dir_for_upload(normalized))
     file_count = sum(1 for item in root.iterdir() if item.is_file())
@@ -6937,6 +6985,8 @@ def session_debug(session_id: str):
 
 @app.get("/api/session/debug/routes")
 def session_debug_routes():
+    if os.getenv("ENABLE_SESSION_DEBUG_ENDPOINTS", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=404, detail="Not found")
     session_routes = []
     for route in app.routes:
         path = getattr(route, "path", "")

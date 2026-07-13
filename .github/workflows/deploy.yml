@@ -5,19 +5,32 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-
   deploy:
-
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
+    timeout-minutes: 30
+    env:
+      IMAGE_REPO: ghcr.io/colinbed/ifctoolkit
+      IMAGE_TAG: ${{ github.sha }}
     steps:
-
       - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: pytest tests/test_public_pages.py tests/test_runtime_startup.py tests/test_session_upload_route_alignment.py -q
+
+      - name: Block tracked local secret files
+        run: python scripts/check_tracked_secrets.py
+
+      - name: Verify Kubernetes secret is configured
+        run: |
+          if [ -z "${{ secrets.KUBE_CONFIG }}" ]; then
+            echo "KUBE_CONFIG GitHub secret is not configured. Rotate Civo credentials and configure the replacement secret before deploying." >&2
+            exit 1
+          fi
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -28,22 +41,35 @@ jobs:
 
       - name: Build image
         run: |
-          docker build -t ghcr.io/colinbed/ifctoolkit:latest .
+          docker build \
+            -t "$IMAGE_REPO:$IMAGE_TAG" \
+            -t "$IMAGE_REPO:latest" \
+            .
 
       - name: Push image
         run: |
-          docker push ghcr.io/colinbed/ifctoolkit:latest
+          docker push "$IMAGE_REPO:$IMAGE_TAG"
+          docker push "$IMAGE_REPO:latest"
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
 
       - name: Configure Kubernetes
         run: |
-          mkdir ~/.kube
-          echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+          mkdir -p ~/.kube
+          umask 077
+          printf '%s' "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
 
-      - name: Deploy
+      - name: Deploy immutable image
         run: |
           kubectl apply -f k8s/
-          kubectl rollout restart deployment/ifctoolkit
-          kubectl rollout status deployment/ifctoolkit
+          kubectl set image deployment/ifctoolkit ifctoolkit="$IMAGE_REPO:$IMAGE_TAG"
+          kubectl set env deployment/ifctoolkit DEPLOYED_GIT_SHA="$IMAGE_TAG"
+          kubectl rollout status deployment/ifctoolkit --timeout=10m
+
+      - name: Post-deployment smoke checks
+        run: |
+          kubectl get deployment/ifctoolkit
+          curl --fail --silent --show-error https://ifctoolkit.com/health/live
+          curl --fail --silent --show-error https://ifctoolkit.com/health/ready
+          curl --fail --silent --show-error https://ifctoolkit.com/ >/dev/null
