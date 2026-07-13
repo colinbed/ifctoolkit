@@ -17,11 +17,29 @@ IFC Toolkit is a FastAPI-based, SaaS-ready IFC validation product for `ifctoolki
 ## SaaS MVP shell
 
 ```bash
-cp .env.example .env
 uvicorn app:app --reload
 ```
 
 Open `http://localhost:8000`. Existing prototype utilities remain available from `/legacy/upload` while they are progressively integrated into the authenticated workspace.
+
+Local `.env` files are intentionally ignored and must not be committed. Configure environment variables in your shell, local process manager, or deployment platform instead. Production Kubernetes deployments should continue to source runtime configuration from Secrets and ConfigMaps with `secretKeyRef` and `configMapKeyRef` entries rather than committing credentials or writing them directly into manifests.
+
+### Configuration reference
+
+| Variable | Required for | Description | Safe example format |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | SaaS database-backed jobs/accounts | Database connection URL used by database-backed features. | `postgresql://app_user:<password>@db.example.internal:5432/ifctoolkit` |
+| `STORAGE_BUCKET` | Object-storage deployments | Bucket/container name for uploaded file storage when external storage is enabled. | `ifctoolkit-uploads-prod` |
+| `STORAGE_REGION` | Object-storage deployments | Cloud/object-storage region. | `gb-london-1` |
+| `STORAGE_ENDPOINT` | S3-compatible storage | S3-compatible endpoint URL, when required by the provider. | `https://object-storage.example.internal` |
+| `AUTH_SECRET` | Production authentication | Strong random secret for signed auth/session cookies. Generate a unique production value and keep it in a secret manager. | `<generate-with-secret-manager>` |
+| `APP_URL` | Production authentication/links | Public base URL for the deployed app. | `https://ifctoolkit.example.com` |
+| `STRIPE_SECRET_KEY` | Billing integrations | Stripe secret API key, if billing is enabled. Keep it in a secret manager. | `<stripe-secret-key-from-provider>` |
+| `EMAIL_PROVIDER_KEY` | Transactional email | Provider API key for outbound email, if enabled. Keep it in a secret manager. | `<email-provider-secret-key>` |
+| `FILE_RETENTION_MINUTES` | Upload/session retention | Number of minutes to retain temporary uploaded files before cleanup. | `30` |
+| `MAX_UPLOAD_SIZE_MB` | Upload limits | Maximum upload size in MiB for application-level validation. | `1200` |
+| `SAAS_DB_PATH` | Local SQLite development | SQLite path for local SaaS metadata when not using an external database. | `data/ifc_toolkit.db` |
+
 
 Uploaded files are processed in temporary session storage and are intended to be automatically deleted after validation. IFC Toolkit does not use uploaded files to train AI models. Production deployments must set a strong `AUTH_SECRET`, use HTTPS, configure UK-region storage, and run a scheduled retention worker.
 

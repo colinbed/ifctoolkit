@@ -6,6 +6,8 @@
 .kube/
 .env
 .env.*
+**/.env
+**/.env.*
 *.pem
 *.key
 *.crt
