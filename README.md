@@ -1,5 +1,5 @@
 ---
-title: IFC Toolkit Hub
+title: IFC Toolkit
 emoji: 🛰️
 colorFrom: blue
 colorTo: purple
@@ -7,6 +7,28 @@ sdk: docker
 app_port: 8000
 pinned: false
 ---
+
+# IFC Toolkit
+
+**Practical tools, better compliance.**
+
+IFC Toolkit is a FastAPI-based, SaaS-ready IFC validation product for `ifctoolkit.com`. It combines a public marketing site, private authenticated workspace, organisation-ready account model, and the existing IFC/COBie processing utilities.
+
+## SaaS MVP shell
+
+```bash
+cp .env.example .env
+uvicorn app:app --reload
+```
+
+Open `http://localhost:8000`. Existing prototype utilities remain available from `/legacy/upload` while they are progressively integrated into the authenticated workspace.
+
+Uploaded files are processed in temporary session storage and are intended to be automatically deleted after validation. IFC Toolkit does not use uploaded files to train AI models. Production deployments must set a strong `AUTH_SECRET`, use HTTPS, configure UK-region storage, and run a scheduled retention worker.
+
+See [`docs/saas-mvp.md`](docs/saas-mvp.md) for deployment configuration, migration steps, and follow-up work.
+
+---
+
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
 
@@ -75,9 +97,9 @@ COBie QC is now a built-in IFC Toolkit page available at **/tools/cobieqc** (no 
 ### Runtime requirements
 
 - Java runtime is required because the backend executes `CobieQcReporter.jar`.
-- Railway/web runtimes must bind to `0.0.0.0:$PORT` (with local fallback `8000`).
+- Container web runtimes must bind to `0.0.0.0:$PORT` (with local fallback `8000`).
 - A lightweight health endpoint is available at `GET /health` for platform healthchecks.
-- Railway production deployments should mount a persistent volume at `/data`.
+- Production deployments that run COBie QC should mount persistent runtime assets at `/data` or configure equivalent object storage/runtime asset paths.
 - On startup, COBieQC assets are bootstrapped with folder-first precedence:
   - `/data/cobieqc/CobieQcReporter.jar`
   - `/data/cobieqc/xsl_xml/`
@@ -88,8 +110,8 @@ COBie QC is now a built-in IFC Toolkit page available at **/tools/cobieqc** (no 
   - If `COBIEQC_XML_FILE_URLS_JSON` is set, `COBIEQC_XML_SOURCE_URL` is ignored.
 - `COBIEQC_XML_ZIP_SOURCE_URL` is deprecated and ignored for XML/XSL resources.
 - XML/XSL bootstrap no longer downloads/extracts ZIP archives; it validates a local resource folder and optionally performs folder sync only via folder-source handling.
-- For Railway, the most reliable setup is to mount/copy the unzipped `xsl_xml` folder directly at `COBIEQC_RESOURCE_DIR`.
-- Runtime path env vars (recommended on Railway):
+- The most reliable setup is to mount/copy the unzipped `xsl_xml` folder directly at `COBIEQC_RESOURCE_DIR`.
+- Runtime path env vars:
   - `COBIEQC_DATA_DIR=/data/cobieqc`
   - `COBIEQC_JAR_PATH=/data/cobieqc/CobieQcReporter.jar`
   - `COBIEQC_RESOURCE_DIR=/data/cobieqc/xsl_xml`
@@ -164,7 +186,7 @@ Backwards-compatible endpoint retained:
 - `IFC_WORKER_CONCURRENCY` (default `1`)
 - `IFC_OUTPUT_BUCKET` (default `ifc-outputs`)
 
-### Railway process commands
+### Container process commands
 
 - Web: `uvicorn app:app --host 0.0.0.0 --port $PORT`
 - Worker: `python -m backend.ifc_worker`

@@ -95,6 +95,9 @@ from backend.ifc_area_spaces import (
 from backend.ifc_area_spaces_router import build_area_spaces_router
 from backend.ifc_move_rotate import TransformRequest, transform_ifc_file
 from backend.project_tables import get_tables_for_project_slug
+from ifc_app.saas import initialise as initialise_saas
+from ifc_app.saas import CookieSessionMiddleware
+from ifc_app.saas import router as saas_router
 
 try:
     import gc
@@ -125,9 +128,10 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 BACKEND_CONFIG_DIR = Path(__file__).resolve().parent / "backend" / "config"
 UTC = datetime.timezone.utc
 HEAVY_JOB_SEMAPHORE = threading.Semaphore(1)
-MAX_UPLOAD_BYTES = 1_200_000_000
-MAX_UPLOAD_GB = 1.2
-MAX_UPLOAD_DISPLAY = "1.2 GB"
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1200"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+MAX_UPLOAD_GB = round(MAX_UPLOAD_BYTES / (1024 ** 3), 2)
+MAX_UPLOAD_DISPLAY = f"{MAX_UPLOAD_MB} MB"
 REQUEST_BODY_LIMIT_HEADROOM_BYTES = 25_000_000
 MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + REQUEST_BODY_LIMIT_HEADROOM_BYTES
 MAX_IFC_BYTES = int(os.getenv("MAX_IFC_BYTES", str(80 * 1024 * 1024)))
@@ -6418,6 +6422,7 @@ def _log_area_spaces_route_registration() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    initialise_saas()
     startup_cleanup()
     _log_session_route_registration()
     _log_area_spaces_route_registration()
@@ -6427,7 +6432,14 @@ async def lifespan(_: FastAPI):
         shutdown_cleanup()
 
 
-app = FastAPI(title="IFC Toolkit Hub", lifespan=lifespan)
+app = FastAPI(title="IFC Toolkit", lifespan=lifespan)
+app.add_middleware(
+    CookieSessionMiddleware,
+    secret_key=os.getenv("AUTH_SECRET", "development-only-change-me"),
+    https_only=os.getenv("APP_URL", "").startswith("https://"),
+    same_site="lax",
+)
+app.include_router(saas_router)
 app.mount("/static", CacheControlledStaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["asset_url"] = resolve_asset_url
@@ -6523,7 +6535,7 @@ def upload_limits():
     }
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/legacy/upload", response_class=HTMLResponse)
 def upload_page(request: Request):
     return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
 

@@ -1,0 +1,31 @@
+{% extends "saas/layout.html" %}
+
+{% block content %}
+<section class="page-hero">
+  <span class="eyebrow">Compliance &amp; Security</span>
+  <h1>Built for information you can trust.</h1>
+  <p>Security-conscious defaults and transparent processing for dependable IFC validation.</p>
+</section>
+
+<section class="section">
+  <div class="cards">
+    {% for title, copy in [
+      ('Why it matters', 'Project information deserves clear handling and accountable controls.'),
+      ('Security principles', 'Least privilege, secure configuration, input validation, and auditable activity.'),
+      ('Session-based processing', 'Original uploads are temporary and automatically deleted after processing.'),
+      ('UK hosting / UK deployment readiness', 'Prepared for Civo UK Sovereign Cloud and Azure UK South deployment.'),
+      ('Standards alignment', 'Aligned with ISO 27001 principles and designed to support Cyber Essentials requirements.'),
+      ('Security controls', 'Secure cookies in production, server-side access checks, validated uploads, and environment-managed secrets.'),
+      ('AI transparency', 'Uploaded files are not used to train AI models.'),
+      ('Data retention', 'Report metadata is retained; report outputs follow configured retention.'),
+      ('Security roadmap', 'MFA, SSO, enterprise deployment, custom retention, and security questionnaires are planned.'),
+      ('FAQ', 'Certification claims will only be published when independently confirmed and configured.')
+    ] %}
+      <article>
+        <h3>{{ title }}</h3>
+        <p>{{ copy }}</p>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

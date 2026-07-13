@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}IFC Toolkit{% endblock %}</title>
+    <link rel="stylesheet" href="/static/saas.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="IFC Toolkit home">
+        <span class="layers" aria-hidden="true"><i></i><i></i><i></i></span>
+        <b>ifc<span>toolkit</span></b>
+      </a>
+      <nav aria-label="Primary navigation">
+        {% if user %}
+          <a href="/app/dashboard">Dashboard</a>
+          <a href="/app/tools">Tools</a>
+          <a href="/app/reports">Reports</a>
+          <a href="/app/organisation">Organisation</a>
+          <a href="/app/settings">Settings</a>
+          <a href="/app/billing">Billing</a>
+          <form action="/logout" method="post">
+            <button class="link" type="submit">Logout</button>
+          </form>
+        {% else %}
+          <a href="/tools">Tools</a>
+          <a href="/resources">Resources</a>
+          <a href="/pricing">Pricing</a>
+          <a href="/compliance-security">Compliance &amp; Security</a>
+          <a href="/about">About</a>
+          <a href="/login">Login</a>
+          <a class="button small" href="/signup">Get Started</a>
+        {% endif %}
+      </nav>
+    </header>
+    <main>{% block content %}{% endblock %}</main>
+    <footer>
+      <div class="brand"><b>ifc<span>toolkit</span></b></div>
+      <p>Practical tools, better compliance.</p>
+      <p>Designed for UK-hosted deployment · ifctoolkit.com</p>
+    </footer>
+  </body>
+</html>
