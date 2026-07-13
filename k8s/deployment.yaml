@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ifctoolkit
+spec:
+  # IMPORTANT: keep replicas at 1 while session files and in-memory job state are local to the pod.
+  # Increasing replicas requires external session/job storage and sticky routing or a redesign.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ifctoolkit
+  template:
+    metadata:
+      labels:
+        app: ifctoolkit
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-secret
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Gi
+      containers:
+        - name: ifctoolkit
+          image: ghcr.io/colinbed/ifctoolkit:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+              ephemeral-storage: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+              ephemeral-storage: "10Gi"
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          env:
+            - name: APP_URL
+              value: "https://ifctoolkit.com"
+            - name: APP_TEMP_ROOT
+              value: "/tmp/ifctoolkit"
+            - name: DEPLOYED_GIT_SHA
+              value: "unknown"
+            - name: FILE_RETENTION_MINUTES
+              value: "30"
+            - name: MIN_READY_TEMP_FREE_BYTES
+              value: "536870912"

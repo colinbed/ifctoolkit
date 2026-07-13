@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ page.title }} | IFC Toolkit</title>
+    <meta name="description" content="{{ page.description or page.subtitle }}" />
+    <link rel="stylesheet" href="{{ asset_url('style.css') }}" />
+  </head>
+  <body class="public-site">
+    <header class="public-header">
+      <a class="public-brand" href="/" aria-label="IFC Toolkit home">
+        <img src="/static/brand/ifctoolkit-logo-horizontal.png" alt="ifctoolkit" />
+        <span>Practical tools, better compliance.</span>
+      </a>
+      <button class="public-menu-toggle" type="button" aria-controls="public-nav" aria-expanded="false">Menu</button>
+      <nav class="public-nav" id="public-nav" aria-label="Public navigation">
+        <a class="{% if page.active=='home' %}active{% endif %}" href="/">Home</a>
+        <a class="{% if page.active=='about' %}active{% endif %}" href="/about">About</a>
+        <a class="{% if page.active=='tools' %}active{% endif %}" href="/tools">Tools</a>
+        <a class="{% if page.active=='documentation' %}active{% endif %}" href="/documentation">Documentation</a>
+        <a class="{% if page.active=='compliance' %}active{% endif %}" href="/compliance">Compliance</a>
+        <a class="{% if page.active=='pricing' %}active{% endif %}" href="/pricing">Pricing</a>
+        <a class="{% if page.active=='contact' %}active{% endif %}" href="/contact">Contact</a>
+        <a class="public-button small" href="/app">Get Started</a>
+      </nav>
+    </header>
+    <main class="public-main">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="public-footer">
+      <div class="footer-brand"><strong>ifctoolkit</strong><span>Practical tools, better compliance.</span></div>
+      <div><h3>Product</h3><a href="/tools">Tools</a><a href="/tools">IFC Validator</a><a href="/tools">COBie Checker</a><a href="/tools">Data QA</a></div>
+      <div><h3>Resources</h3><a href="/documentation">Documentation</a><a href="/resources">Templates</a><a href="/resources">Guides</a><a href="/resources">Standards</a></div>
+      <div><h3>Company</h3><a href="/about">About</a><a href="/pricing">Pricing</a><a href="/contact">Contact</a></div>
+      <div><h3>Legal</h3><a href="#">Privacy Policy</a><a href="#">Terms of Service</a><h3>Social</h3><a href="#">LinkedIn</a></div>
+    </footer>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        var toggle = document.querySelector(".public-menu-toggle");
+        var nav = document.getElementById("public-nav");
+        if (!toggle || !nav) return;
+        toggle.addEventListener("click", function () {
+          var isOpen = nav.classList.toggle("is-open");
+          toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        });
+        nav.querySelectorAll("a").forEach(function (link) {
+          link.addEventListener("click", function () {
+            nav.classList.remove("is-open");
+            toggle.setAttribute("aria-expanded", "false");
+          });
+        });
+      });
+    </script>
+  </body>
+</html>

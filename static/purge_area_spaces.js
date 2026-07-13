@@ -83,7 +83,7 @@
   async function loadSessionFiles() {
     const sessionId = getActiveSessionId();
     if (!sessionId) {
-      status.textContent = "No active session. Create/upload in Upload & Session first.";
+      status.textContent = "No active session. Create or upload in Session & Uploads first.";
       filesSelect.innerHTML = "";
       console.info("[ifc-tools]", { page: PAGE_NAME, sessionId, filesReturned: 0, ifcFiles: 0 });
       return;

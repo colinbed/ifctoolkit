@@ -1,0 +1,18 @@
+{% macro hero(page, secondary='View tools', primary='Get Started', primary_href='/app', secondary_href='/tools', eyebrow='PRACTICAL TOOLS, BETTER COMPLIANCE.') -%}
+<section class="public-hero">
+  <div>
+    <p class="public-eyebrow">{{ eyebrow }}</p>
+    <h1>{{ page.title }}</h1>
+    <p class="public-lede">{{ page.subtitle }}</p>
+    <div class="public-actions">
+      <a class="public-button" href="{{ primary_href }}">{{ primary }}</a>
+      <a class="public-button secondary" href="{{ secondary_href }}">{{ secondary }}</a>
+    </div>
+  </div>
+  <div class="hero-panel hero-logo-panel" aria-hidden="true">
+    <img src="/static/brand/ifctoolkit-logo-stacked.png" alt="" class="hero-logo-stacked" />
+  </div>
+</section>
+{%- endmacro %}
+{% macro cta(text='Ready to improve your information quality?', button='Get Started', href='/app') -%}<section class="cta-band"><h2>{{ text }}</h2><a class="public-button" href="{{ href }}">{{ button }}</a></section>{%- endmacro %}
+{% macro cards(items) -%}<div class="public-grid">{% for i in items %}<article class="public-card"><h3>{{ i[0] }}</h3><p>{{ i[1] }}</p>{% if i|length > 2 %}<span class="badge-light">{{ i[2] }}</span>{% endif %}</article>{% endfor %}</div>{%- endmacro %}

@@ -1,33 +1,31 @@
-FROM python:3.13-slim
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_TEMP_ROOT=/tmp/ifctoolkit
 
 WORKDIR /app
-ARG BUILD_MARKER=dev
 
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-ENV PATH="${JAVA_HOME}/bin:${PATH}"
-ENV COBIEQC_JAVA_XMS=128m
-ENV COBIEQC_JAVA_XMX=512m
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt packages.txt ./
+COPY requirements.txt .
 
-RUN apt-get update && \
-    awk '{ sub(/[[:space:]]*#.*/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if (length) print }' packages.txt > /tmp/apt-packages-clean.txt && \
-    awk '!/^[a-z0-9][a-z0-9+.-]*$/ { print "Invalid apt package entry in packages.txt: " $0; bad=1 } END { exit bad }' /tmp/apt-packages-clean.txt && \
-    if [ -s /tmp/apt-packages-clean.txt ]; then \
-        xargs -r -a /tmp/apt-packages-clean.txt apt-get install -y --no-install-recommends; \
-    fi && \
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg bash && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    apt-get clean && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN echo "BUILD_MARKER=${BUILD_MARKER}"
 
-RUN chmod +x /app/scripts/bootstrap_cobieqc.sh
+RUN groupadd --system --gid 10001 ifctoolkit \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin ifctoolkit \
+    && mkdir -p /tmp/ifctoolkit /app/static/_hashed \
+    && chown -R ifctoolkit:ifctoolkit /tmp/ifctoolkit /app/static/_hashed
+
+USER 10001:10001
 
 EXPOSE 8000
 
-CMD ["bash", "-lc", "/app/scripts/bootstrap_cobieqc.sh && uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -9,7 +9,7 @@ const mcState = {
   entityScopes: [],
 };
 
-const withProcessing = window.withProcessing || (async (_message, fn) => fn());
+const mcWithProcessing = window.withProcessing || (async (_message, fn) => fn());
 
 function mcEsc(val) {
   if (val === null || val === undefined) return "";
@@ -304,7 +304,7 @@ async function loadSectionData(section) {
 async function loadAllSections() {
   mcState.pending = [];
   renderChangeLog();
-  return withProcessing("Loading model checking data…", async () => {
+  return mcWithProcessing("Loading model checking data…", async () => {
     for (const sec of mcState.sections) {
       // eslint-disable-next-line no-await-in-loop
       await loadSectionData(sec);
@@ -327,7 +327,7 @@ async function applyModelChanges() {
       mode: p.mode,
     })),
   };
-  return withProcessing("Applying model checking edits…", async () => {
+  return mcWithProcessing("Applying model checking edits…", async () => {
     const resp = await fetch(`/api/session/${state.sessionId}/checks/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

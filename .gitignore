@@ -17,3 +17,19 @@ __pycache__/
 
 # Generated static asset fingerprints at runtime.
 /static/_hashed/
+
+# Local secrets and cluster credentials
+*kubeconfig*
+.kube/
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets/
+*.secret

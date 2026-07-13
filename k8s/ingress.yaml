@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ifctoolkit-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - ifctoolkit.com
+        - www.ifctoolkit.com
+      secretName: ifctoolkit-tls
+  rules:
+    - host: ifctoolkit.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ifctoolkit-service
+                port:
+                  number: 80
+    - host: www.ifctoolkit.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ifctoolkit-service
+                port:
+                  number: 80

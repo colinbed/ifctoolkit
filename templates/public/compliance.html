@@ -1,0 +1,34 @@
+{% extends "public/base.html" %}
+{% import "public/macros.html" as ui %}
+{% block content %}
+{{ ui.hero(page, 'Read documentation', secondary_href='/documentation') }}
+<section class="public-section">
+  <article class="public-card notice-card"><h2>Important compliance note</h2><p>IFC Toolkit supports compliance workflows but does not automatically make a project compliant. Project teams remain responsible for their own contractual, client, security and information management requirements.</p></article>
+</section>
+<section class="public-section">
+  <h2>Information security approach</h2>
+  <p>The platform is being developed around controlled, transparent information handling for project model data.</p>
+  {{ ui.cards([
+    ('Session-based processing','Use session-based file processing where possible and avoid unnecessary long-term storage of uploaded model files.'),
+    ('Limited retention','The platform should avoid persistent storage of uploaded IFC files unless explicitly required by a user workflow.'),
+    ('Clear separation','Public site content is kept separate from private user and project areas.'),
+    ('Controlled storage','Where data is stored, it should be handled through controlled application storage and database services.'),
+    ('Only what is needed','Retain data only where needed for the user workflow.'),
+    ('Future-ready controls','The roadmap supports auditability, access control and secure project workspaces.')
+  ]) }}
+</section>
+<section class="public-section">
+  <h2>Standards alignment</h2>
+  {{ ui.cards([
+    ('ISO 19650','Supports structured information management principles and helps teams review naming, classification, model organisation and delivery outputs.'),
+    ('COBie and asset information','Supports review and extraction of data relevant to asset handover and helps identify missing, inconsistent or poorly structured information before formal submission.'),
+    ('IFC and openBIM','Built around IFC as an open data format, helping make model data more accessible, inspectable and usable.'),
+    ('Cyber and hosting considerations','IFC Toolkit is being designed to align with recognised information security principles, including controlled access, limited retention, secure hosting and clear data handling practices. Formal certifications, where applicable, should be stated separately once achieved.')
+  ]) }}
+</section>
+<section class="public-section split">
+  <article class="public-card"><h2>Data handling principles</h2><ul><li>Only upload what is needed.</li><li>Avoid storing files longer than necessary.</li><li>Keep project-sensitive information controlled.</li><li>Use anonymised or reduced test files where possible.</li><li>Follow client and project-specific security requirements.</li><li>Do not upload security-sensitive information unless the platform and project controls are approved for that use.</li></ul></article>
+  <article class="public-card"><h2>Security-sensitive projects</h2><p>Some projects, such as government, custodial, defence, healthcare or critical infrastructure schemes, may require enhanced controls. IFC Toolkit should not be assumed suitable for all security classifications by default.</p><p>For security-sensitive projects, teams should confirm whether IFC Toolkit is approved for use under the relevant project Security Aspects Letter, client protocol, data handling policy and contractual requirements before uploading project information.</p></article>
+</section>
+<section class="cta-band"><h2>Need to understand how IFC Toolkit handles information?</h2><div class="public-actions"><a class="public-button" href="/contact">Contact us</a><a class="public-button secondary" href="/documentation">Read documentation</a></div></section>
+{% endblock %}
