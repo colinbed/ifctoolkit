@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'asset-info/**'
+      - 'k8s-asset-info/**'
+      - '.github/workflows/deploy-asset-info.yml'
 
 permissions:
   contents: read

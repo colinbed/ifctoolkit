@@ -1,0 +1,48 @@
+name: Deploy Asset Information Assurance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'asset-info/**'
+      - 'k8s-asset-info/**'
+      - '.github/workflows/deploy-asset-info.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_REPO: ghcr.io/colinbed/ifctoolkit-asset-info
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Asset Info tests
+        working-directory: asset-info
+        run: pip install -r requirements.txt && pytest -q
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Build and push isolated image
+        run: |
+          docker build -t "$IMAGE_REPO:$IMAGE_TAG" -t "$IMAGE_REPO:latest" asset-info
+          docker push "$IMAGE_REPO:$IMAGE_TAG"
+          docker push "$IMAGE_REPO:latest"
+      - uses: azure/setup-kubectl@v4
+      - name: Configure Kubernetes
+        run: |
+          mkdir -p ~/.kube
+          umask 077
+          printf '%s' "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+      - name: Deploy Asset Info only
+        run: |
+          kubectl apply -f k8s-asset-info/namespace.yaml
+          kubectl apply -f k8s-asset-info/postgres.yaml -f k8s-asset-info/api.yaml
+          kubectl --namespace asset-info set image deployment/asset-info-api asset-info-api="$IMAGE_REPO:$IMAGE_TAG" migrate="$IMAGE_REPO:$IMAGE_TAG"
+          kubectl --namespace asset-info rollout status deployment/asset-info-api --timeout=10m

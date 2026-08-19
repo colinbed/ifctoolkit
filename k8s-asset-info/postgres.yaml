@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: asset-info-postgres-pvc
+  namespace: asset-info
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: asset-info-postgres
+  namespace: asset-info
+spec:
+  selector:
+    app: asset-info-postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asset-info-postgres
+  namespace: asset-info
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: asset-info-postgres
+  template:
+    metadata:
+      labels:
+        app: asset-info-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: asset-info-postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "asset_info", "-d", "asset_info"]
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: asset-info-postgres-pvc

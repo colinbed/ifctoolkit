@@ -1,0 +1,26 @@
+services:
+  asset-info-api:
+    build:
+      context: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://asset_info:asset_info@asset-info-postgres:5432/asset_info
+    ports:
+      - "8001:8000"
+    depends_on:
+      asset-info-postgres:
+        condition: service_healthy
+  asset-info-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: asset_info
+      POSTGRES_USER: asset_info
+      POSTGRES_PASSWORD: asset_info
+    volumes:
+      - asset-info-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asset_info -d asset_info"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  asset-info-postgres-data:
