@@ -1,0 +1,19 @@
+{% extends "saas/layout.html" %}
+{% block title %}IFC Tools · IFC Toolkit{% endblock %}
+{% block content %}
+<section class="app-shell">
+  <span class="eyebrow">Existing functionality</span>
+  <h1>IFC Tools</h1>
+  <p>The current IFC processing routes remain intact and available from this authenticated workspace.</p>
+  <div class="dashboard-cards">
+    <a href="/legacy/upload"><strong>IFC upload session</strong><span>Create a session and upload IFC files.</span></a>
+    <a href="/excel"><strong>IFC to Excel</strong><span>Extract, configure and round-trip project data.</span></a>
+    <a href="/ifc-qa/extractor"><strong>IFC Data QA</strong><span>Extract and review model information.</span></a>
+    <a href="/tools/cobieqc"><strong>COBie QC</strong><span>Run the existing COBie quality checks.</span></a>
+    <a href="/cleaner"><strong>Pset tools</strong><span>Clean unwanted property data.</span></a>
+    <a href="/proxy"><strong>Proxy / type tools</strong><span>Improve IFC class and predefined type data.</span></a>
+    <a href="/presentation-layer"><strong>Classification & layers</strong><span>Review presentation and information organisation.</span></a>
+    <a href="/tools/reduce-file-size"><strong>File reduction</strong><span>Analyse and reduce IFC file size.</span></a>
+  </div>
+</section>
+{% endblock %}

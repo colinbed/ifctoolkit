@@ -26,6 +26,8 @@ const state = {
   processingCount: 0,
   updatedIfcName: null,
   excelPreview: null,
+  excelProtocol: null,
+  excelSelectedProtocolEntity: "",
   dataExtractor: {
     sessionState: "loading",
     selectedIfcFiles: new Set(),
@@ -878,6 +880,559 @@ async function runCleaner() {
   });
 }
 
+const EXCEL_PROTOCOL_STORAGE_KEY = "ifctk.excel.protocols.v1";
+const EXCEL_ACTIVE_PROTOCOL_STORAGE_KEY = "ifctk.excel.active-protocol.v1";
+
+function protocolNowIso() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function cloneJson(payload) {
+  return JSON.parse(JSON.stringify(payload || {}));
+}
+
+function slugifyProtocolId(value) {
+  return String(value || "field")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "field";
+}
+
+function fallbackExcelProtocol() {
+  const now = protocolNowIso();
+  return {
+    schema_version: "1.0",
+    name: "Default IFC Toolkit configuration",
+    project_client: "",
+    description: "Default IFC to Excel extraction and write-back configuration.",
+    version: "1.0",
+    created_by: "IFC Toolkit",
+    created_date: now,
+    last_modified: now,
+    ifc_schemas: ["IFC2X3", "IFC4", "IFC4X3"],
+    visibility: "private",
+    entities: [
+      {
+        entity: "IfcElement",
+        enabled: true,
+        include_subtypes: true,
+        fields: [
+          {
+            id: "asset_name",
+            label: "Asset Name",
+            source: { kind: "attribute", attribute: "Name" },
+            datatype: "text",
+            editable: true,
+            write: { enabled: true, target: { kind: "attribute", attribute: "Name" } },
+          },
+          {
+            id: "asset_type",
+            label: "Asset Type",
+            source: { kind: "attribute", attribute: "ObjectType" },
+            datatype: "text",
+            editable: true,
+            write: { enabled: true, target: { kind: "attribute", attribute: "ObjectType" } },
+          },
+          {
+            id: "type_name",
+            label: "Type Name",
+            source: { kind: "type_attribute", attribute: "Name" },
+            datatype: "text",
+            editable: true,
+            write: { enabled: true, target: { kind: "type_attribute", attribute: "Name" } },
+          },
+        ],
+      },
+      {
+        entity: "IfcDoor",
+        enabled: true,
+        include_subtypes: true,
+        fields: [
+          {
+            id: "fire_rating",
+            label: "Fire Rating",
+            source: { kind: "property", pset: "Pset_DoorCommon", property: "FireRating" },
+            datatype: "text",
+            editable: true,
+            write: {
+              enabled: true,
+              create_if_missing: true,
+              data_type: "IfcLabel",
+              target: { kind: "property", pset: "Pset_DoorCommon", property: "FireRating" },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function normaliseExcelProtocol(protocol) {
+  const next = cloneJson(protocol || fallbackExcelProtocol());
+  const now = protocolNowIso();
+  next.schema_version = next.schema_version || "1.0";
+  next.name = next.name || "Untitled IFC Toolkit configuration";
+  next.version = next.version || "1.0";
+  next.description = next.description || "";
+  next.project_client = next.project_client || "";
+  next.created_by = next.created_by || "";
+  next.created_date = next.created_date || now;
+  next.last_modified = next.last_modified || now;
+  next.ifc_schemas = Array.isArray(next.ifc_schemas) && next.ifc_schemas.length ? next.ifc_schemas : ["IFC2X3", "IFC4", "IFC4X3"];
+  next.entities = Array.isArray(next.entities) ? next.entities : [];
+  next.entities.forEach((entity) => {
+    entity.entity = entity.entity || "IfcElement";
+    entity.enabled = entity.enabled !== false;
+    entity.include_subtypes = entity.include_subtypes !== false;
+    entity.fields = Array.isArray(entity.fields) ? entity.fields : [];
+    entity.fields.forEach((field) => {
+      field.label = field.label || field.id || "Field";
+      field.id = field.id || slugifyProtocolId(field.label);
+      field.datatype = field.datatype || "text";
+      field.editable = field.editable !== false;
+      field.source = field.source || { kind: "attribute", attribute: "Name" };
+      field.write = field.write || { enabled: false };
+    });
+  });
+  if (!state.excelSelectedProtocolEntity || !next.entities.some((entity) => entity.entity === state.excelSelectedProtocolEntity)) {
+    state.excelSelectedProtocolEntity = next.entities[0]?.entity || "";
+  }
+  return next;
+}
+
+function setExcelProtocol(protocol, options = {}) {
+  state.excelProtocol = normaliseExcelProtocol(protocol);
+  if (options.touch) state.excelProtocol.last_modified = protocolNowIso();
+  renderExcelProtocol();
+}
+
+function getStoredActiveExcelProtocol() {
+  try {
+    const stored = localStorage.getItem(EXCEL_ACTIVE_PROTOCOL_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch (err) {
+    console.warn("Stored Excel protocol is invalid", err);
+    return null;
+  }
+}
+
+async function initExcelProtocol(options = {}) {
+  if (!el("excelConfigurator") && !el("excelActiveConfig")) return;
+  if (!options.forceDefault) {
+    const activeProtocol = getStoredActiveExcelProtocol();
+    if (activeProtocol) {
+      setExcelProtocol(activeProtocol);
+      return;
+    }
+  }
+  try {
+    const resp = await fetch("/api/excel/protocol/default");
+    if (resp.ok) {
+      const data = await resp.json();
+      setExcelProtocol(data.protocol || fallbackExcelProtocol());
+      return;
+    }
+  } catch (err) {
+    console.warn("Default Excel protocol unavailable", err);
+  }
+  setExcelProtocol(fallbackExcelProtocol());
+}
+
+function syncExcelProtocolMetadata(touch = true) {
+  if (!state.excelProtocol) return;
+  state.excelProtocol.name = el("excelConfigName")?.value || state.excelProtocol.name;
+  state.excelProtocol.project_client = el("excelConfigProject")?.value || "";
+  state.excelProtocol.description = el("excelConfigDescription")?.value || "";
+  state.excelProtocol.version = el("excelConfigVersion")?.value || state.excelProtocol.version || "1.0";
+  state.excelProtocol.created_by = el("excelConfigCreatedBy")?.value || "";
+  if (touch) state.excelProtocol.last_modified = protocolNowIso();
+  renderExcelProtocol({ keepInputs: true });
+}
+
+function countProtocolFields(protocol) {
+  return (protocol?.entities || []).reduce((total, entity) => total + (entity.fields || []).length, 0);
+}
+
+function getSelectedProtocolEntity() {
+  if (!state.excelProtocol) return null;
+  return (state.excelProtocol.entities || []).find((entity) => entity.entity === state.excelSelectedProtocolEntity) || state.excelProtocol.entities?.[0] || null;
+}
+
+function sourceSummary(source = {}) {
+  const kind = String(source.kind || "").toLowerCase();
+  if (kind === "attribute") return `Attribute.${source.attribute || ""}`;
+  if (kind === "type_attribute") return `Type.${source.attribute || ""}`;
+  if (kind === "property") return `${source.pset || ""}.${source.property || ""}`;
+  if (kind === "type_property") return `Type.${source.pset || ""}.${source.property || ""}`;
+  if (kind === "quantity") return `${source.qto || source.pset || ""}.${source.quantity || source.property || ""}`;
+  if (kind === "classification") return `Classification[${source.system || source.classification_system || ""}]`;
+  if (kind === "predefined_type") return "PredefinedType";
+  if (kind === "constant") return `Constant:${source.value || ""}`;
+  if (kind === "calculated" || kind === "concat") return "Calculated";
+  if (kind === "first_non_empty") return (source.sources || []).map(sourceSummary).join(" > ");
+  return kind || "Field";
+}
+
+function fieldPsetSummary(source = {}) {
+  const kind = String(source.kind || "").toLowerCase();
+  if (kind === "attribute" || kind === "type_attribute") return "-";
+  if (kind === "classification") return source.system || source.classification_system || "";
+  if (kind === "quantity") return source.qto || source.pset || "";
+  if (kind === "constant") return source.value || "";
+  if (kind === "first_non_empty") return "Fallback chain";
+  return source.pset || source.system || "";
+}
+
+function fieldPropertySummary(source = {}) {
+  const kind = String(source.kind || "").toLowerCase();
+  if (kind === "attribute" || kind === "type_attribute") return source.attribute || "";
+  if (kind === "classification") return source.value || "reference";
+  if (kind === "quantity") return source.quantity || source.property || "";
+  if (kind === "constant") return "";
+  return source.property || "";
+}
+
+function renderExcelProtocol(options = {}) {
+  const protocol = state.excelProtocol;
+  if (!protocol) return;
+  const enabledEntities = (protocol.entities || []).filter((entity) => entity.enabled !== false).length;
+  const protocolMeta = `${countProtocolFields(protocol)} configured fields - ${enabledEntities} IFC entities`;
+  if (el("excelActiveConfigName")) el("excelActiveConfigName").textContent = protocol.name || "Untitled configuration";
+  if (el("excelActiveConfigMeta")) el("excelActiveConfigMeta").textContent = protocolMeta;
+  if (el("excelActiveConfigVersion")) el("excelActiveConfigVersion").textContent = `v${protocol.version || "1.0"}`;
+  if (!el("excelConfigurator")) return;
+  if (!options.keepInputs) {
+    if (el("excelConfigName")) el("excelConfigName").value = protocol.name || "";
+    if (el("excelConfigProject")) el("excelConfigProject").value = protocol.project_client || "";
+    if (el("excelConfigDescription")) el("excelConfigDescription").value = protocol.description || "";
+    if (el("excelConfigVersion")) el("excelConfigVersion").value = protocol.version || "1.0";
+    if (el("excelConfigCreatedBy")) el("excelConfigCreatedBy").value = protocol.created_by || "";
+  }
+  if (el("excelConfigCreatedDate")) el("excelConfigCreatedDate").textContent = protocol.created_date || "-";
+  if (el("excelConfigLastModified")) el("excelConfigLastModified").textContent = protocol.last_modified || "-";
+  if (el("excelConfigSchemaVersion")) el("excelConfigSchemaVersion").textContent = protocol.schema_version || "1.0";
+  if (el("excelConfigVersionBadge")) el("excelConfigVersionBadge").textContent = `v${protocol.version || "1.0"}`;
+  if (el("excelConfigSummaryName")) el("excelConfigSummaryName").textContent = protocol.name || "Untitled configuration";
+  if (el("excelConfigSummaryMeta")) {
+    el("excelConfigSummaryMeta").textContent = protocolMeta;
+  }
+
+  renderExcelEntityOptions();
+  renderExcelProtocolEntities();
+  renderExcelProtocolFields();
+}
+
+function renderExcelEntityOptions() {
+  const select = el("excelAddEntitySelect");
+  if (!select) return;
+  const fromPreview = (state.excelPreview?.available_classes || []).map((item) => item.name);
+  const common = ["IfcElement", "IfcDoor", "IfcWindow", "IfcSpace", "IfcFan", "IfcWall", "IfcSystem", "IfcFlowSegment"];
+  const names = Array.from(new Set([...fromPreview, ...common])).filter(Boolean).sort();
+  const current = select.value;
+  select.innerHTML = "";
+  names.forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  });
+  if (current && names.includes(current)) select.value = current;
+}
+
+function renderExcelProtocolEntities() {
+  const container = el("excelProtocolEntities");
+  if (!container || !state.excelProtocol) return;
+  container.innerHTML = "";
+  (state.excelProtocol.entities || []).forEach((entity) => {
+    const row = document.createElement("div");
+    row.className = "excel-entity-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = entity.enabled !== false;
+    checkbox.addEventListener("change", () => {
+      entity.enabled = checkbox.checked;
+      state.excelProtocol.last_modified = protocolNowIso();
+      renderExcelProtocol();
+    });
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = entity.entity === state.excelSelectedProtocolEntity ? "btn" : "btn secondary";
+    label.textContent = entity.entity;
+    label.addEventListener("click", () => {
+      state.excelSelectedProtocolEntity = entity.entity;
+      renderExcelProtocol();
+    });
+    const count = document.createElement("span");
+    count.textContent = `${(entity.fields || []).length} fields`;
+    row.appendChild(checkbox);
+    row.appendChild(label);
+    row.appendChild(count);
+    container.appendChild(row);
+  });
+}
+
+function renderExcelProtocolFields() {
+  const body = el("excelProtocolFields");
+  const title = el("excelSelectedEntityTitle");
+  if (!body) return;
+  const entity = getSelectedProtocolEntity();
+  body.innerHTML = "";
+  if (title) title.textContent = entity?.entity || "No entity selected";
+  if (!entity) return;
+  (entity.fields || []).forEach((field, index) => {
+    const source = field.source || {};
+    const write = field.write || {};
+    const tr = document.createElement("tr");
+    const cells = [
+      field.label || field.id || "Field",
+      sourceSummary(source),
+      fieldPsetSummary(source),
+      fieldPropertySummary(source),
+      field.datatype || "text",
+      field.editable !== false ? "Yes" : "No",
+      write.enabled ? "Yes" : "No",
+    ];
+    cells.forEach((text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    const actionTd = document.createElement("td");
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn secondary";
+    deleteBtn.textContent = "Remove";
+    deleteBtn.addEventListener("click", () => {
+      entity.fields.splice(index, 1);
+      state.excelProtocol.last_modified = protocolNowIso();
+      renderExcelProtocol();
+    });
+    actionTd.appendChild(deleteBtn);
+    tr.appendChild(actionTd);
+    body.appendChild(tr);
+  });
+}
+
+function buildSourceFromInputs() {
+  const kind = el("excelFieldType")?.value || "attribute";
+  const sourceName = (el("excelFieldSource")?.value || "").trim();
+  const propertyName = (el("excelFieldProperty")?.value || "").trim();
+  if (kind === "attribute") return { kind: "attribute", attribute: propertyName || "Name" };
+  if (kind === "property") return { kind: "property", pset: sourceName || "Pset_Custom", property: propertyName || "Value" };
+  if (kind === "type_property") return { kind: "type_property", pset: sourceName || "Pset_Custom", property: propertyName || "Value" };
+  if (kind === "quantity") return { kind: "quantity", qto: sourceName || "BaseQuantities", quantity: propertyName || "Length" };
+  if (kind === "classification") return { kind: "classification", system: sourceName || "Uniclass 2015", value: propertyName || "reference" };
+  if (kind === "predefined_type") return { kind: "predefined_type" };
+  if (kind === "constant") return { kind: "constant", value: propertyName || sourceName || "" };
+  return { kind: "calculated", expression: sourceName || propertyName || "" };
+}
+
+function buildWriteTarget(source) {
+  const writePset = (el("excelFieldWritePset")?.value || "").trim();
+  const writeProperty = (el("excelFieldWriteProperty")?.value || "").trim();
+  const target = cloneJson(source);
+  if (["property", "type_property"].includes(target.kind) && (writePset || writeProperty)) {
+    target.pset = writePset || target.pset;
+    target.property = writeProperty || target.property;
+  }
+  return target;
+}
+
+function addExcelProtocolField() {
+  if (!state.excelProtocol) return;
+  const entity = getSelectedProtocolEntity();
+  if (!entity) return alert("Add or select an IFC entity first.");
+  const label = (el("excelFieldLabel")?.value || "").trim();
+  if (!label) return alert("Enter an output column name.");
+  const source = buildSourceFromInputs();
+  const datatype = el("excelFieldDatatype")?.value || "text";
+  entity.fields.push({
+    id: slugifyProtocolId(label),
+    label,
+    source,
+    datatype,
+    editable: !!el("excelFieldEditable")?.checked,
+    write: {
+      enabled: !!el("excelFieldWrite")?.checked,
+      target: buildWriteTarget(source),
+      create_if_missing: !!el("excelFieldCreateMissing")?.checked,
+      data_type: datatype === "number" ? "IfcReal" : "IfcLabel",
+    },
+  });
+  state.excelProtocol.last_modified = protocolNowIso();
+  renderExcelProtocol();
+}
+
+function addExcelProtocolEntity() {
+  if (!state.excelProtocol) return;
+  const name = el("excelAddEntitySelect")?.value || "IfcElement";
+  if ((state.excelProtocol.entities || []).some((entity) => entity.entity === name)) {
+    state.excelSelectedProtocolEntity = name;
+    renderExcelProtocol();
+    return;
+  }
+  state.excelProtocol.entities.push({ entity: name, enabled: true, include_subtypes: true, fields: [] });
+  state.excelSelectedProtocolEntity = name;
+  state.excelProtocol.last_modified = protocolNowIso();
+  renderExcelProtocol();
+}
+
+function downloadExcelConfiguration() {
+  syncExcelProtocolMetadata(false);
+  const protocol = normaliseExcelProtocol(state.excelProtocol);
+  const text = JSON.stringify(protocol, null, 2);
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const baseName = slugifyProtocolId(protocol.name || "ifc_toolkit_configuration").replace(/_/g, "-");
+  link.href = url;
+  link.download = `${baseName}.ifctk-config.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function saveExcelConfigurationLocal() {
+  syncExcelProtocolMetadata(false);
+  const protocol = normaliseExcelProtocol(state.excelProtocol);
+  let saved = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(EXCEL_PROTOCOL_STORAGE_KEY) || "[]");
+    saved = Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.warn("Stored Excel protocol list is invalid", err);
+  }
+  const next = saved.filter((item) => item.name !== protocol.name || item.version !== protocol.version);
+  next.push(protocol);
+  localStorage.setItem(EXCEL_PROTOCOL_STORAGE_KEY, JSON.stringify(next));
+  localStorage.setItem(EXCEL_ACTIVE_PROTOCOL_STORAGE_KEY, JSON.stringify(protocol));
+  setExcelProtocol(protocol);
+  if (el("excelStatus")) el("excelStatus").textContent = `Configuration saved locally: ${protocol.name} v${protocol.version}`;
+}
+
+function useExcelConfiguration() {
+  saveExcelConfigurationLocal();
+  window.location.href = "/excel";
+}
+
+function duplicateExcelConfiguration() {
+  if (!state.excelProtocol) return;
+  const copy = normaliseExcelProtocol(state.excelProtocol);
+  copy.name = `${copy.name || "Configuration"} Copy`;
+  copy.version = "1.0";
+  copy.created_date = protocolNowIso();
+  copy.last_modified = copy.created_date;
+  setExcelProtocol(copy);
+}
+
+function createNewExcelConfiguration() {
+  const now = protocolNowIso();
+  setExcelProtocol({
+    schema_version: "1.0",
+    name: "New IFC Toolkit configuration",
+    project_client: "",
+    description: "",
+    version: "1.0",
+    created_by: "",
+    created_date: now,
+    last_modified: now,
+    ifc_schemas: ["IFC2X3", "IFC4", "IFC4X3"],
+    visibility: "private",
+    entities: [{ entity: "IfcElement", enabled: true, include_subtypes: true, fields: [] }],
+  });
+}
+
+function importExcelConfigurationFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result || "{}"));
+      setExcelProtocol(parsed, { touch: true });
+      if (el("excelStatus")) el("excelStatus").textContent = `Configuration imported: ${state.excelProtocol.name}`;
+    } catch (err) {
+      alert("Configuration import failed. Check that the file is valid JSON.");
+    }
+  };
+  reader.readAsText(file);
+}
+
+function renderExcelDetectedProperties(preview = state.excelPreview) {
+  const container = el("excelDetectedProperties");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!preview) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "Scan an IFC model to populate detected properties.";
+    container.appendChild(empty);
+    return;
+  }
+  const groups = [];
+  Object.entries(preview.properties_by_pset || {}).forEach(([pset, props]) => groups.push({ kind: "property", title: pset, pset, props }));
+  Object.entries(preview.type_properties_by_pset || {}).forEach(([pset, props]) => groups.push({ kind: "type_property", title: `Type.${pset}`, pset, props }));
+  Object.entries(preview.quantities_by_set || {}).forEach(([qto, props]) => groups.push({ kind: "quantity", title: qto, qto, props }));
+  (preview.classification_systems || []).forEach((item) => groups.push({ kind: "classification", title: item.name, pset: item.name, props: ["reference"] }));
+  groups.slice(0, 24).forEach((group) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "excel-detected-group";
+    const title = document.createElement("strong");
+    title.textContent = group.title;
+    wrapper.appendChild(title);
+    (group.props || []).slice(0, 16).forEach((propertyName) => {
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.kind = group.kind;
+      checkbox.dataset.pset = group.pset || group.title.replace(/^Type\./, "");
+      checkbox.dataset.qto = group.qto || "";
+      checkbox.dataset.property = propertyName;
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(propertyName));
+      wrapper.appendChild(label);
+    });
+    container.appendChild(wrapper);
+  });
+}
+
+function addDetectedFieldsToProtocol() {
+  if (!state.excelProtocol) return;
+  const entity = getSelectedProtocolEntity();
+  if (!entity) return alert("Add or select an IFC entity first.");
+  const selected = Array.from(document.querySelectorAll("#excelDetectedProperties input[type='checkbox']:checked"));
+  if (!selected.length) return alert("Select one or more detected properties.");
+  selected.forEach((checkbox) => {
+    const kind = checkbox.dataset.kind || "property";
+    const propertyName = checkbox.dataset.property || "Value";
+    const pset = checkbox.dataset.pset || "";
+    const source = kind === "quantity"
+      ? { kind: "quantity", qto: checkbox.dataset.qto || pset, quantity: propertyName }
+      : kind === "classification"
+        ? { kind: "classification", system: pset, value: "reference" }
+        : { kind, pset, property: propertyName };
+    const label = propertyName;
+    const exists = (entity.fields || []).some((field) => field.label === label && sourceSummary(field.source) === sourceSummary(source));
+    if (exists) return;
+    entity.fields.push({
+      id: slugifyProtocolId(`${pset}_${propertyName}`),
+      label,
+      source,
+      datatype: kind === "quantity" ? "number" : "text",
+      editable: kind !== "quantity",
+      write: {
+        enabled: kind !== "quantity",
+        target: cloneJson(source),
+        create_if_missing: kind !== "quantity",
+        data_type: kind === "quantity" ? "IfcReal" : "IfcLabel",
+      },
+    });
+  });
+  state.excelProtocol.last_modified = protocolNowIso();
+  renderExcelProtocol();
+}
+
 async function extractExcel() {
   const file = el("excelIfc")?.value;
   if (!file) return alert("Select an IFC file.");
@@ -906,6 +1461,7 @@ async function extractExcel() {
       include_type_properties: !!el("excelIncludeTypeProps")?.checked,
       include_spatial_fields: !!el("excelIncludeSpatial")?.checked,
       include_classifications: !!el("excelIncludeClassifications")?.checked,
+      protocol: normaliseExcelProtocol(state.excelProtocol),
     },
   };
   return withProcessing("Extracting Excel workbook…", async () => {
@@ -966,6 +1522,8 @@ function renderExcelPreview(preview) {
     };
     el("excelPreviewMeta").textContent = JSON.stringify(summary, null, 2);
   }
+  renderExcelEntityOptions();
+  renderExcelDetectedProperties(preview);
 }
 
 async function scanExcelModel() {
@@ -2027,6 +2585,38 @@ function wireEvents() {
   const downloadExcelBtn = el("downloadExcelFile");
   if (downloadExcelBtn) downloadExcelBtn.addEventListener("click", downloadSelectedExcel);
 
+  const excelUseDefaultConfig = el("excelUseDefaultConfig");
+  if (excelUseDefaultConfig) excelUseDefaultConfig.addEventListener("click", () => initExcelProtocol({ forceDefault: true }));
+  const excelNewConfig = el("excelNewConfig");
+  if (excelNewConfig) excelNewConfig.addEventListener("click", createNewExcelConfiguration);
+  const excelImportConfig = el("excelImportConfig");
+  if (excelImportConfig) excelImportConfig.addEventListener("click", () => el("excelConfigImportInput")?.click());
+  const excelConfigImportInput = el("excelConfigImportInput");
+  if (excelConfigImportInput) {
+    excelConfigImportInput.addEventListener("change", (event) => {
+      importExcelConfigurationFile(event.target.files?.[0]);
+      event.target.value = "";
+    });
+  }
+  const excelDuplicateConfig = el("excelDuplicateConfig");
+  if (excelDuplicateConfig) excelDuplicateConfig.addEventListener("click", duplicateExcelConfiguration);
+  const excelSaveLocalConfig = el("excelSaveLocalConfig");
+  if (excelSaveLocalConfig) excelSaveLocalConfig.addEventListener("click", saveExcelConfigurationLocal);
+  const excelUseConfig = el("excelUseConfig");
+  if (excelUseConfig) excelUseConfig.addEventListener("click", useExcelConfiguration);
+  const excelDownloadConfig = el("excelDownloadConfig");
+  if (excelDownloadConfig) excelDownloadConfig.addEventListener("click", downloadExcelConfiguration);
+  const excelAddEntity = el("excelAddEntity");
+  if (excelAddEntity) excelAddEntity.addEventListener("click", addExcelProtocolEntity);
+  const excelAddField = el("excelAddField");
+  if (excelAddField) excelAddField.addEventListener("click", addExcelProtocolField);
+  const excelAddDetectedFields = el("excelAddDetectedFields");
+  if (excelAddDetectedFields) excelAddDetectedFields.addEventListener("click", addDetectedFieldsToProtocol);
+  ["excelConfigName", "excelConfigProject", "excelConfigDescription", "excelConfigVersion", "excelConfigCreatedBy"].forEach((id) => {
+    const input = el(id);
+    if (input) input.addEventListener("input", () => syncExcelProtocolMetadata(true));
+  });
+
   const downloadUpdatedIfcBtn = el("downloadUpdatedIfc");
   if (downloadUpdatedIfcBtn) downloadUpdatedIfcBtn.addEventListener("click", downloadUpdatedIfcFile);
 
@@ -2171,6 +2761,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   state.uploadProgressEl = el("upload-progress") || state.uploadProgressEl;
   await loadUploadLimits();
   wireEvents();
+  await initExcelProtocol();
+  renderExcelDetectedProperties();
   renderPendingChanges();
   renderDataExtractorSessionFiles();
   ensureSession();

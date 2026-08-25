@@ -1,0 +1,16 @@
+{% extends "saas/layout.html" %}
+{% block title %}Account · IFC Toolkit{% endblock %}
+{% block content %}
+<section class="auth">
+  <form method="post">
+    <span class="eyebrow">Supabase account</span>
+    <h1>Account</h1>
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success" role="status">{{ message }}</p>{% endif %}
+    <label>Name<input name="name" required autocomplete="name" value="{{ display_name }}"></label>
+    <label>Email<input type="email" value="{{ user.email }}" disabled></label>
+    <button class="button" type="submit">Save profile</button>
+    <p class="fine">Name is stored in Supabase user metadata and, when present and permitted by RLS, the matching public.profiles row.</p>
+  </form>
+</section>
+{% endblock %}

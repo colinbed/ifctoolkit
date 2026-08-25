@@ -1,205 +1,471 @@
-"""SaaS shell, account, organisation, and audit primitives for IFC Toolkit."""
+"""Supabase-backed authentication and private application routes."""
 from __future__ import annotations
 
-import hashlib
-import hmac
-import base64
-import json
-import os
-import secrets
-import sqlite3
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+import logging
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ifc_app.supabase_auth import (
+    SupabaseAuthError,
+    clear_auth_session,
+    get_auth_service,
+    get_current_user,
+    require_user,
+    safe_next_url,
+    session_from_auth_response,
+    store_auth_session,
+    user_display_name,
+)
+
+
+LOGGER = logging.getLogger("ifc_app.auth.routes")
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
-DB_PATH = Path(os.getenv("SAAS_DB_PATH", "data/ifc_toolkit.db"))
-ROLES = {"Owner", "Admin", "User", "Viewer"}
+templates.env.globals["auth_user"] = get_current_user
+templates.env.globals["user_display_name"] = user_display_name
 
 
-class CookieSessionMiddleware:
-    """Small signed-cookie session middleware without an external session service."""
+REGULATION_38_SECTIONS = (
+    "Overview",
+    "Project / Building Information",
+    "Fire Safety Information",
+    "Passive Fire Protection",
+    "Active Fire Systems",
+    "Fire Doors",
+    "Compartmentation",
+    "Fire Stopping / Penetrations",
+    "Drawings & Models",
+    "Inspection / Commissioning Information",
+    "Handover Documents",
+    "Outstanding Information",
+    "Completeness Review",
+)
 
-    def __init__(
-        self,
-        app,
-        secret_key: str,
-        https_only: bool = False,
-        same_site: str = "lax",
-    ):
-        self.app = app
-        self.secret = secret_key.encode()
-        self.https_only = https_only
-        self.same_site = same_site.capitalize()
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] not in {"http", "websocket"}:
-            return await self.app(scope, receive, send)
-        headers = dict(scope.get("headers") or [])
-        cookies = headers.get(b"cookie", b"").decode()
-        token = next((part.split("=", 1)[1] for part in cookies.split("; ") if part.startswith("ifc_session=")), "")
-        session: dict[str, Any] = {}
-        if "." in token:
-            payload, signature = token.rsplit(".", 1)
-            if hmac.compare_digest(hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest(), signature):
-                try:
-                    session = json.loads(base64.urlsafe_b64decode(payload + "=="))
-                except (ValueError, json.JSONDecodeError):
-                    session = {}
-        scope["session"] = session
-
-        async def send_wrapper(message):
-            if message["type"] == "http.response.start":
-                payload = base64.urlsafe_b64encode(json.dumps(scope["session"]).encode()).decode().rstrip("=")
-                signature = hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
-                cookie = (
-                    f"ifc_session={payload}.{signature}; "
-                    f"Path=/; HttpOnly; SameSite={self.same_site}"
-                )
-                if self.https_only:
-                    cookie += "; Secure"
-                message.setdefault("headers", []).append((b"set-cookie", cookie.encode()))
-            await send(message)
-        await self.app(scope, receive, send_wrapper)
-
-PUBLIC_PAGES = {
-    "/tools": ("Tools", "Practical tools for better information management.", "Start with IFC validation, then use focused utilities to improve model quality."),
-    "/resources": ("Resources", "Clear guidance for dependable IFC delivery.", "Practical notes, methodologies, and checklists are being prepared for the IFC Toolkit community."),
-    "/pricing": ("Simple pricing", "Start validating with confidence.", "MVP access is available by invitation while subscriptions and enterprise plans are prepared."),
-    "/about": ("About IFC Toolkit", "Built to make compliance practical.", "IFC Toolkit turns complex information requirements into clear, repeatable validation workflows."),
-    "/contact": ("Contact", "Talk to the IFC Toolkit team.", "Tell us about your validation workflow, deployment requirements, or enterprise readiness needs."),
-}
-APP_PAGES = {
-    "/app/dashboard": ("Dashboard", "Your validation workspace", "Track recent validation jobs, reports, and compliance activity."),
-    "/app/tools": ("Tools", "Practical validation tools", "Use focused tools to improve the quality and readiness of your information."),
-    "/app/reports": ("Reports", "Validation reports", "Report metadata and configured outputs are retained; original uploads are not."),
-    "/app/settings": ("Settings", "Your profile and preferences", "Account controls are ready for future MFA and SSO integration."),
-    "/app/organisation": ("Organisation", "Workspace and roles", "The workspace supports Owner, Admin, User, and Viewer roles."),
-    "/app/billing": ("Billing", "Subscription readiness", "Subscription billing will be enabled after the MVP access period."),
-}
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-def initialise() -> None:
-    with connect() as db:
-        db.executescript("""
-        CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, email_verified_at TEXT, created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS organisations (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS organisation_members (organisation_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (organisation_id, user_id));
-        CREATE TABLE IF NOT EXISTS validation_jobs (id TEXT PRIMARY KEY, organisation_id TEXT NOT NULL, user_id TEXT NOT NULL, filename TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT);
-        CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, organisation_id TEXT NOT NULL, validation_job_id TEXT NOT NULL, format TEXT NOT NULL, retention_until TEXT, created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, organisation_id TEXT, user_id TEXT, event TEXT NOT NULL, metadata TEXT, created_at TEXT NOT NULL);
-        """)
-
-def password_hash(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 240_000).hex()
-    return f"{salt}:{digest}"
-
-def password_ok(password: str, stored: str) -> bool:
-    salt, expected = stored.split(":", 1)
-    actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 240_000).hex()
-    return hmac.compare_digest(actual, expected)
-
-def current_user(request: Request) -> dict[str, Any] | None:
-    user_id = request.session.get("user_id")
-    if not user_id:
-        return None
-    with connect() as db:
-        row = db.execute("SELECT id, email, display_name FROM users WHERE id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
-
-def audit(event: str, user_id: str | None = None, organisation_id: str | None = None, metadata: str = "") -> None:
-    with connect() as db:
-        db.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?)", (uuid.uuid4().hex, organisation_id, user_id, event, metadata, now()))
 
 def context(request: Request, **extra: Any) -> dict[str, Any]:
-    return {"request": request, "user": current_user(request), **extra}
+    return {"request": request, "user": get_current_user(request), **extra}
 
-def protected(request: Request) -> dict[str, Any] | RedirectResponse:
-    user = current_user(request)
-    return user or RedirectResponse(f"/login?next={request.url.path}", status_code=303)
 
-@router.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    return templates.TemplateResponse(request=request, name="saas/home.html", context=context(request))
+def _login_redirect(request: Request) -> RedirectResponse:
+    target = request.url.path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(f"/login?next={quote(target, safe='/')}", status_code=303)
 
-for path, page in PUBLIC_PAGES.items():
-    def make_public(route_path: str, details: tuple[str, str, str]):
-        @router.get(route_path, response_class=HTMLResponse)
-        def public_page(request: Request):
-            return templates.TemplateResponse(request=request, name="saas/public_page.html", context=context(request, title=details[0], heading=details[1], copy=details[2], route=route_path))
-    make_public(path, page)
 
-@router.get("/compliance-security", response_class=HTMLResponse)
-def compliance(request: Request):
-    return templates.TemplateResponse(request=request, name="saas/compliance.html", context=context(request))
+def _private_user(request: Request) -> dict[str, Any] | RedirectResponse:
+    return require_user(request) or _login_redirect(request)
+
+
+def _auth_page(
+    request: Request,
+    *,
+    mode: str,
+    error: str | None = None,
+    message: str | None = None,
+    status_code: int = 200,
+    next_url: str = "",
+    can_reset: bool = False,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/auth.html",
+        context=context(
+            request,
+            mode=mode,
+            error=error,
+            message=message,
+            next_url=safe_next_url(next_url, default="/app") if next_url else "/app",
+            can_reset=can_reset,
+        ),
+        status_code=status_code,
+    )
+
 
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    return templates.TemplateResponse(request=request, name="saas/auth.html", context=context(request, mode="login", error=None))
+def login_page(request: Request, next: str = ""):
+    if get_current_user(request):
+        return RedirectResponse(safe_next_url(next), status_code=303)
+    return _auth_page(request, mode="login", next_url=next)
+
 
 @router.post("/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    with connect() as db:
-        row = db.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone()
-    if not row or not password_ok(password, row["password_hash"]):
-        return templates.TemplateResponse(request=request, name="saas/auth.html", context=context(request, mode="login", error="Email or password is incorrect."), status_code=400)
-    request.session["user_id"] = row["id"]
-    audit("user.login", row["id"])
-    return RedirectResponse("/app/dashboard", status_code=303)
+def login(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    next: str = Form(""),
+):
+    destination = safe_next_url(next)
+    try:
+        result = get_auth_service().sign_in(email.strip().lower(), password)
+        session = session_from_auth_response(result)
+        if not session:
+            raise SupabaseAuthError("Email or password is incorrect.")
+        store_auth_session(request, session)
+    except SupabaseAuthError as exc:
+        LOGGER.info("Supabase login rejected: %s", exc.detail or exc.public_message)
+        return _auth_page(
+            request,
+            mode="login",
+            error=exc.public_message,
+            status_code=exc.status_code if exc.status_code >= 500 else 400,
+            next_url=destination,
+        )
+    return RedirectResponse(destination, status_code=303)
+
 
 @router.get("/signup", response_class=HTMLResponse)
-def signup_page(request: Request):
-    return templates.TemplateResponse(request=request, name="saas/auth.html", context=context(request, mode="signup", error=None))
+def signup_page(request: Request, next: str = ""):
+    if get_current_user(request):
+        return RedirectResponse(safe_next_url(next), status_code=303)
+    return _auth_page(request, mode="signup", next_url=next)
+
 
 @router.post("/signup")
-def signup(request: Request, display_name: str = Form(...), organisation_name: str = Form(...), email: str = Form(...), password: str = Form(...)):
-    if len(password) < 10:
-        return templates.TemplateResponse(request=request, name="saas/auth.html", context=context(request, mode="signup", error="Use at least 10 characters for your password."), status_code=400)
-    user_id, org_id = uuid.uuid4().hex, uuid.uuid4().hex
+def signup(
+    request: Request,
+    name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    next: str = Form(""),
+):
+    destination = safe_next_url(next)
+    clean_name = name.strip()
+    if not clean_name:
+        return _auth_page(request, mode="signup", error="Enter your name.", status_code=400, next_url=destination)
+    if password != confirm_password:
+        return _auth_page(request, mode="signup", error="Passwords do not match.", status_code=400, next_url=destination)
+    if len(password) < 8:
+        return _auth_page(
+            request,
+            mode="signup",
+            error="Use at least 8 characters for your password.",
+            status_code=400,
+            next_url=destination,
+        )
     try:
-        with connect() as db:
-            db.execute("INSERT INTO users VALUES (?, ?, ?, ?, NULL, ?)", (user_id, email.strip().lower(), password_hash(password), display_name.strip(), now()))
-            db.execute("INSERT INTO organisations VALUES (?, ?, ?)", (org_id, organisation_name.strip(), now()))
-            db.execute("INSERT INTO organisation_members VALUES (?, ?, 'Owner', ?)", (org_id, user_id, now()))
-    except sqlite3.IntegrityError:
-        return templates.TemplateResponse(request=request, name="saas/auth.html", context=context(request, mode="signup", error="An account with that email already exists."), status_code=400)
-    request.session["user_id"] = user_id
-    audit("user.signup", user_id, org_id)
-    return RedirectResponse("/app/dashboard", status_code=303)
+        result = get_auth_service().sign_up(clean_name, email.strip().lower(), password)
+        session = session_from_auth_response(result)
+    except SupabaseAuthError as exc:
+        LOGGER.info("Supabase signup rejected: %s", exc.detail or exc.public_message)
+        return _auth_page(
+            request,
+            mode="signup",
+            error=exc.public_message,
+            status_code=exc.status_code if exc.status_code >= 500 else 400,
+            next_url=destination,
+        )
+    if session:
+        store_auth_session(request, session)
+        return RedirectResponse(destination, status_code=303)
+    return _auth_page(
+        request,
+        mode="signup",
+        message="Account created. Check your email to confirm your address, then log in.",
+        next_url=destination,
+    )
 
-@router.post("/logout")
+
+@router.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request):
+    return _auth_page(request, mode="forgot")
+
+
+@router.post("/forgot-password", response_class=HTMLResponse)
+def forgot_password(request: Request, email: str = Form(...)):
+    try:
+        get_auth_service().send_password_reset(email.strip().lower())
+    except SupabaseAuthError as exc:
+        LOGGER.info("Supabase password reset request failed: %s", exc.detail or exc.public_message)
+        return _auth_page(
+            request,
+            mode="forgot",
+            error=exc.public_message,
+            status_code=exc.status_code if exc.status_code >= 500 else 400,
+        )
+    return _auth_page(
+        request,
+        mode="forgot",
+        message="If an account exists for that email, a password reset link is on its way.",
+    )
+
+
+@router.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page(request: Request):
+    return _auth_page(request, mode="reset", can_reset=bool(get_current_user(request)))
+
+
+@router.post("/reset-password", response_class=HTMLResponse)
+def reset_password(
+    request: Request,
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+):
+    user = require_user(request)
+    if not user:
+        return _auth_page(
+            request,
+            mode="reset",
+            error="Open the latest password reset link from your email before setting a new password.",
+            status_code=401,
+            can_reset=False,
+        )
+    if password != confirm_password:
+        return _auth_page(request, mode="reset", error="Passwords do not match.", status_code=400, can_reset=True)
+    if len(password) < 8:
+        return _auth_page(
+            request,
+            mode="reset",
+            error="Use at least 8 characters for your password.",
+            status_code=400,
+            can_reset=True,
+        )
+    access_token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        get_auth_service().update_password(access_token, password)
+    except SupabaseAuthError as exc:
+        return _auth_page(
+            request,
+            mode="reset",
+            error=exc.public_message,
+            status_code=exc.status_code if exc.status_code >= 500 else 400,
+            can_reset=True,
+        )
+    return _auth_page(request, mode="reset", message="Password updated. You can continue to the application.", can_reset=True)
+
+
+@router.get("/auth/callback", response_class=HTMLResponse)
+def auth_callback(request: Request, token_hash: str = "", type: str = "", code: str = ""):
+    if token_hash and type:
+        try:
+            result = get_auth_service().verify_token_hash(token_hash, type)
+            session = session_from_auth_response(result)
+            if session:
+                store_auth_session(request, session)
+            destination = "/reset-password" if type == "recovery" else "/app"
+            return RedirectResponse(destination, status_code=303)
+        except SupabaseAuthError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="saas/callback.html",
+                context=context(request, error=exc.public_message),
+                status_code=400,
+            )
+    if code:
+        try:
+            verifier = str((request.scope.get("auth_session") or {}).get("code_verifier") or "")
+            result = get_auth_service().exchange_code(code, verifier)
+            session = session_from_auth_response(result)
+            if session:
+                store_auth_session(request, session)
+                return RedirectResponse("/app", status_code=303)
+        except SupabaseAuthError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="saas/callback.html",
+                context=context(request, error=exc.public_message),
+                status_code=400,
+            )
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/callback.html",
+        context=context(request, error=None),
+    )
+
+
+@router.post("/auth/session")
+async def establish_callback_session(request: Request):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"detail": "Invalid callback payload."}, status_code=400)
+    session = session_from_auth_response(payload if isinstance(payload, dict) else {})
+    if not session:
+        return JSONResponse({"detail": "Authentication tokens were not provided."}, status_code=400)
+    try:
+        _, session = get_auth_service().validate_session(session)
+    except SupabaseAuthError as exc:
+        return JSONResponse({"detail": exc.public_message}, status_code=401)
+    store_auth_session(request, session)
+    destination = "/reset-password" if payload.get("type") == "recovery" else "/app"
+    return JSONResponse({"redirect": destination})
+
+
+@router.api_route("/logout", methods=["GET", "POST"])
 def logout(request: Request):
-    user_id = request.session.get("user_id")
-    audit("user.logout", user_id)
-    request.session.clear()
+    session = request.scope.get("auth_session") or {}
+    get_auth_service().sign_out(str(session.get("access_token") or ""))
+    clear_auth_session(request)
     return RedirectResponse("/", status_code=303)
 
-for path, page in APP_PAGES.items():
-    def make_app(route_path: str, details: tuple[str, str, str]):
-        @router.get(route_path, response_class=HTMLResponse)
-        def app_page(request: Request):
-            user = protected(request)
-            if isinstance(user, RedirectResponse): return user
-            return templates.TemplateResponse(request=request, name="saas/app_page.html", context=context(request, title=details[0], heading=details[1], copy=details[2], route=route_path))
-    make_app(path, page)
+
+def _dashboard_context(request: Request, user: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {"request": request, "user": user, **extra}
+
+
+@router.get("/app", response_class=HTMLResponse)
+@router.get("/app/dashboard", response_class=HTMLResponse)
+def app_home(request: Request):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/dashboard.html",
+        context=_dashboard_context(request, user),
+    )
+
+
+@router.get("/app/projects", response_class=HTMLResponse)
+def projects(request: Request):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/projects.html",
+        context=_dashboard_context(request, user),
+    )
+
+
+@router.get("/account", response_class=HTMLResponse)
+@router.get("/app/account", response_class=HTMLResponse)
+def account(request: Request):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    session = request.scope.get("auth_session") or {}
+    profile = None
+    try:
+        profile = get_auth_service().get_profile(str(session.get("access_token") or ""), str(user.get("id") or ""))
+    except SupabaseAuthError as exc:
+        LOGGER.info("Optional profile read failed: %s", exc.detail or exc.public_message)
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/account.html",
+        context=_dashboard_context(
+            request,
+            user,
+            profile=profile,
+            display_name=user_display_name(user, profile),
+            error=None,
+            message=None,
+        ),
+    )
+
+
+@router.post("/account", response_class=HTMLResponse)
+@router.post("/app/account", response_class=HTMLResponse)
+def update_account(request: Request, name: str = Form(...)):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    clean_name = name.strip()
+    if not clean_name:
+        return templates.TemplateResponse(
+            request=request,
+            name="saas/account.html",
+            context=_dashboard_context(
+                request, user, profile=None, display_name="", error="Enter your name.", message=None
+            ),
+            status_code=400,
+        )
+    access_token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        updated_user = get_auth_service().update_name(access_token, clean_name)
+    except SupabaseAuthError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="saas/account.html",
+            context=_dashboard_context(
+                request,
+                user,
+                profile=None,
+                display_name=clean_name,
+                error=exc.public_message,
+                message=None,
+            ),
+            status_code=exc.status_code if exc.status_code >= 500 else 400,
+        )
+    request.scope["auth_user"] = updated_user
+    request.scope["auth_user_resolved"] = True
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/account.html",
+        context=_dashboard_context(
+            request,
+            updated_user,
+            profile=None,
+            display_name=user_display_name(updated_user),
+            error=None,
+            message="Profile updated.",
+        ),
+    )
+
+
+@router.get("/app/regulation-38", response_class=HTMLResponse)
+@router.get("/app/projects/{project_id}/regulation-38", response_class=HTMLResponse)
+def regulation_38(request: Request, project_id: str = ""):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/regulation_38.html",
+        context=_dashboard_context(
+            request,
+            user,
+            project_id=project_id,
+            sections=REGULATION_38_SECTIONS,
+        ),
+    )
+
+
+@router.get("/app/tools", response_class=HTMLResponse)
+def app_tools(request: Request):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/tools.html",
+        context=_dashboard_context(request, user),
+    )
+
 
 @router.get("/app/tools/ifc-validator", response_class=HTMLResponse)
 def validator(request: Request):
-    user = protected(request)
-    if isinstance(user, RedirectResponse): return user
-    return templates.TemplateResponse(request=request, name="saas/validator.html", context=context(request))
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/validator.html",
+        context=_dashboard_context(request, user),
+    )
+
+
+@router.get("/app/reports", response_class=HTMLResponse)
+def reports(request: Request):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(
+        request=request,
+        name="saas/app_page.html",
+        context=_dashboard_context(
+            request,
+            user,
+            title="Reports",
+            heading="Reports",
+            copy="Validation reports and session outputs remain available through the existing IFC tools.",
+            route="/app/reports",
+        ),
+    )
+

@@ -1,0 +1,132 @@
+.success {
+  color: #067647;
+  background: #ecfdf3;
+  padding: 10px;
+  border-radius: 8px;
+}
+.auth-links {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+.callback-card {
+  width: min(560px, 100%);
+  padding: 36px;
+  border: 1px solid #dce3ee;
+  border-radius: 18px;
+  background: white;
+}
+.callback-card h1 {
+  font-size: 38px;
+  margin: 18px 0;
+}
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 18px;
+  margin-top: 35px;
+}
+.dashboard-cards > a,
+.dashboard-cards > article {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+  border: 1px solid #dce3ee;
+  border-radius: 16px;
+  padding: 25px;
+  background: white;
+  box-shadow: 0 12px 40px #0b132b0a;
+}
+.dashboard-cards > a:hover {
+  border-color: #1e6fff;
+  transform: translateY(-2px);
+}
+.dashboard-cards strong {
+  font-size: 22px;
+  color: #0b132b;
+}
+.dashboard-cards span {
+  color: #637089;
+  line-height: 1.55;
+}
+.notice {
+  max-width: 920px !important;
+  padding: 18px;
+  border-left: 4px solid #1e6fff;
+  border-radius: 8px;
+  background: #d9e8ff;
+  font-size: 15px !important;
+}
+.section-list {
+  display: grid;
+  gap: 10px;
+  max-width: 920px;
+  padding: 0;
+  margin-top: 32px;
+}
+.section-list li {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  align-items: center;
+  gap: 14px;
+  list-style: none;
+  padding: 16px 18px;
+  border: 1px solid #dce3ee;
+  border-radius: 12px;
+  background: white;
+}
+.section-list li span {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #d9e8ff;
+  color: #1e6fff;
+  font-weight: 800;
+}
+.section-list li em {
+  font-size: 12px;
+  font-style: normal;
+  color: #637089;
+}
+.auth button:disabled,
+.auth input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.public-nav form,
+.nav-auth-form {
+  margin: 0;
+}
+.public-nav-action,
+.nav-auth-form button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.public-nav-action {
+  padding: 10px 12px;
+  border-radius: 999px;
+  color: #33415c;
+  font-weight: 700;
+  font-size: 14px;
+}
+.public-nav-action:hover {
+  background: #f2f4f8;
+  color: #1e6fff;
+}
+.nav-auth-form button {
+  width: auto;
+}
+@media (max-width: 700px) {
+  .section-list li {
+    grid-template-columns: 42px 1fr;
+  }
+  .section-list li em {
+    grid-column: 2;
+  }
+}

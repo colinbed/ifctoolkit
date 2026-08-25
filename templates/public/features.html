@@ -1,0 +1,4 @@
+{% extends "public/base.html" %}{% import "public/macros.html" as ui %}{% block content %}
+{{ ui.hero(page, 'View IFC Tools') }}
+<section class="public-section"><h2>One public site, one authenticated workspace.</h2>{{ ui.cards([('Supabase authentication','Email/password accounts, recovery flows and validated server-side sessions.'),('Project workspaces','Private project and Regulation 38 entry points with room for the existing project model.'),('IFC processing','The current IFC to Excel, data QA, COBie, classification, proxy and reduction tools remain available.')]) }}</section>
+{% endblock %}

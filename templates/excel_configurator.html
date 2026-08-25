@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+  <div class="section-title">
+    <div>
+      <h2>IFC to Excel Configuration</h2>
+      <p class="muted">Build the extraction schema, validation rules and write-back targets.</p>
+    </div>
+    <a class="btn secondary" href="/excel">Back to Extract / Update</a>
+  </div>
+
+  <section class="excel-configurator" id="excelConfigurator" aria-label="Excel extraction configuration">
+    <div class="section-title compact-title">
+      <div>
+        <h3>Configuration</h3>
+        <p class="muted">Choose, build, import or export a versioned IFC Toolkit configuration.</p>
+      </div>
+      <span class="badge" id="excelConfigVersionBadge">v1.0</span>
+    </div>
+
+    <div class="excel-config-start">
+      <button class="btn secondary" id="excelUseDefaultConfig" type="button">Default IFC Toolkit configuration</button>
+      <button class="btn secondary" id="excelNewConfig" type="button">Create new configuration</button>
+      <button class="btn secondary" id="excelLoadAccountConfig" type="button" disabled>Load configuration from account</button>
+      <button class="btn secondary" id="excelImportConfig" type="button">Import configuration file</button>
+      <button class="btn secondary" id="excelDuplicateConfig" type="button">Duplicate existing configuration</button>
+      <input id="excelConfigImportInput" type="file" accept=".json,.ifctk-config.json,application/json" class="hidden" />
+    </div>
+
+    <div class="excel-model-inspector">
+      <div>
+        <label for="excelIfc">Inspect an uploaded IFC</label>
+        <p class="muted">Scan a model to discover its entities, property sets, quantities and classifications.</p>
+      </div>
+      <div class="inline excel-inline-controls">
+        <select id="excelIfc" data-files-select></select>
+        <button class="btn secondary" id="scanExcelModel" type="button">Scan model</button>
+      </div>
+    </div>
+
+    <div class="excel-config-grid">
+      <div class="excel-config-meta">
+        <label for="excelConfigName">Configuration Name</label>
+        <input id="excelConfigName" type="text" />
+        <label for="excelConfigProject">Project / Client</label>
+        <input id="excelConfigProject" type="text" />
+        <label for="excelConfigDescription">Description</label>
+        <textarea id="excelConfigDescription" rows="3"></textarea>
+      </div>
+      <div class="excel-config-meta">
+        <label for="excelConfigVersion">Version</label>
+        <input id="excelConfigVersion" type="text" />
+        <label for="excelConfigCreatedBy">Created By</label>
+        <input id="excelConfigCreatedBy" type="text" />
+        <div class="excel-config-facts">
+          <span>Created Date <strong id="excelConfigCreatedDate">-</strong></span>
+          <span>Last Modified <strong id="excelConfigLastModified">-</strong></span>
+          <span>Schema Version <strong id="excelConfigSchemaVersion">1.0</strong></span>
+        </div>
+      </div>
+      <div class="excel-config-summary">
+        <strong id="excelConfigSummaryName">Default IFC Toolkit configuration</strong>
+        <span id="excelConfigSummaryMeta">0 configured fields - 0 IFC entities</span>
+        <div class="inline excel-config-actions">
+          <button class="btn" id="excelUseConfig" type="button">Save and use</button>
+          <button class="btn secondary" id="excelSaveLocalConfig" type="button">Save local</button>
+          <button class="btn secondary" id="excelDownloadConfig" type="button">Download</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="excel-builder-grid">
+      <div class="excel-entity-panel">
+        <div class="inline excel-inline-controls">
+          <select id="excelAddEntitySelect"></select>
+          <button class="btn secondary" id="excelAddEntity" type="button">Add IFC Entity</button>
+        </div>
+        <div class="excel-entity-list" id="excelProtocolEntities"></div>
+      </div>
+      <div class="excel-field-panel">
+        <div class="excel-field-header">
+          <strong id="excelSelectedEntityTitle">IfcElement</strong>
+          <button class="btn secondary" id="excelAddField" type="button">Add Field</button>
+        </div>
+        <div class="excel-field-table-wrap">
+          <table class="excel-field-table">
+            <thead>
+              <tr>
+                <th>Output Column</th>
+                <th>IFC Source</th>
+                <th>Pset / Source</th>
+                <th>Property</th>
+                <th>Data Type</th>
+                <th>Editable</th>
+                <th>Write Back</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="excelProtocolFields"></tbody>
+          </table>
+        </div>
+        <div class="excel-field-builder">
+          <label for="excelFieldType">Field type</label>
+          <select id="excelFieldType">
+            <option value="attribute">IFC Attribute</option>
+            <option value="property">Property</option>
+            <option value="type_property">Type Property</option>
+            <option value="quantity">Quantity</option>
+            <option value="classification">Classification</option>
+            <option value="predefined_type">Predefined Type</option>
+            <option value="calculated">Calculated Field</option>
+            <option value="constant">Constant</option>
+          </select>
+          <label for="excelFieldLabel">Output Column</label>
+          <input id="excelFieldLabel" type="text" placeholder="Asset Reference" />
+          <label for="excelFieldSource">Pset / Source</label>
+          <input id="excelFieldSource" type="text" placeholder="Additional_Pset_GeneralCommon" />
+          <label for="excelFieldProperty">Property / Attribute</label>
+          <input id="excelFieldProperty" type="text" placeholder="AssetReference" />
+          <label for="excelFieldDatatype">Data Type</label>
+          <select id="excelFieldDatatype">
+            <option value="text">Text</option>
+            <option value="number">Number</option>
+            <option value="boolean">Boolean</option>
+            <option value="date">Date</option>
+          </select>
+          <label class="checkbox-label"><input type="checkbox" id="excelFieldEditable" checked /> Editable</label>
+          <label class="checkbox-label"><input type="checkbox" id="excelFieldWrite" checked /> Write Back</label>
+          <label class="checkbox-label"><input type="checkbox" id="excelFieldCreateMissing" checked /> Create target if missing</label>
+          <label for="excelFieldWritePset">Write To Pset</label>
+          <input id="excelFieldWritePset" type="text" placeholder="Leave blank for same as source" />
+          <label for="excelFieldWriteProperty">Write To Property</label>
+          <input id="excelFieldWriteProperty" type="text" placeholder="Leave blank for same as source" />
+        </div>
+      </div>
+    </div>
+
+    <div class="excel-discovery">
+      <div class="excel-field-header">
+        <strong>Properties detected in this model</strong>
+        <button class="btn secondary" id="excelAddDetectedFields" type="button">Add selected fields to configuration</button>
+      </div>
+      <div class="excel-detected-properties" id="excelDetectedProperties"></div>
+      <div class="status muted" id="excelPreviewStatus">Scan an IFC model to discover available data.</div>
+      <pre class="status muted" id="excelPreviewMeta"></pre>
+    </div>
+  </section>
+
+  <div class="status" id="excelStatus">Configuration changes are not active until saved.</div>
+</div>
+{% endblock %}
