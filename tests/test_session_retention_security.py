@@ -56,3 +56,19 @@ def test_debug_endpoints_disabled_by_default():
     with pytest.raises(HTTPException) as excinfo:
         app.session_debug_routes()
     assert excinfo.value.status_code == 404
+
+
+def test_native_cobie_jobs_use_session_retention_and_drop_memory_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEMP_UPLOAD_DIR", str(tmp_path))
+    job_id = uuid.uuid4().hex
+    job_dir = tmp_path / "cobie_qa" / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "input.xlsx").write_bytes(b"placeholder")
+    expired = app.utc_now().timestamp() - app.SESSION_STORE.ttl.total_seconds() - 10
+    os.utime(job_dir, (expired, expired))
+    app.COBIE_QA_JOBS[job_id] = {"job_dir": str(job_dir), "status": "complete"}
+
+    app._cleanup_cobie_jobs()
+
+    assert not job_dir.exists()
+    assert job_id not in app.COBIE_QA_JOBS

@@ -603,6 +603,7 @@ def test_svrl_failed_asserts_trigger_hard_warning_when_html_says_no_errors(monke
     )
 
     monkeypatch.setenv("COBIEQC_XSLT_ENGINE", "lxml")
+    monkeypatch.setenv("COBIEQC_REPORT_RENDERER", "legacy_xslt")
     result = run_cobieqc_native(str(workbook), "D", str(job_dir), resources)
 
     assert result.ok

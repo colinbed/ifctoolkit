@@ -14,6 +14,16 @@ Before deploying any image from this repository:
 
 The workflow now stops before deployment if `secrets.KUBE_CONFIG` is not configured.
 
+## Authentication secret prerequisite
+
+The cluster must contain a Secret named `ifctoolkit-auth` with these keys before the deployment workflow runs:
+
+- `AUTH_SECRET`;
+- `SUPABASE_URL`;
+- `SUPABASE_PUBLISHABLE_KEY`.
+
+Create and rotate this Secret out of band. Do not commit a Secret manifest or paste literal values into this repository. In Supabase, set the Site URL to `https://ifctoolkit.com` and allow `https://ifctoolkit.com/auth/callback` for confirmation and recovery emails. The workflow verifies only that the Secret exists; it does not print its contents.
+
 ## Local-session deployment model
 
 IFC Toolkit currently stores uploads, generated files and in-memory job state locally in the pod. The deployment must remain at one replica until session files and job state move to external storage.

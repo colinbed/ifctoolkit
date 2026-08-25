@@ -5,7 +5,7 @@ import ifcopenshell.util.element
 from ifcopenshell.guid import new as new_guid
 
 from app import extract_to_excel, update_ifc_from_excel
-from ifc_protocol import PROTOCOL_CONFIG_SHEET, PROTOCOL_DATA_SHEET
+from ifc_protocol import PROTOCOL_CONFIG_SHEET, PROTOCOL_DATA_SHEET, default_protocol_config, extract_protocol_to_dataframe
 
 
 def _build_protocol_model(tmp_path):
@@ -108,3 +108,19 @@ def test_protocol_writeback_can_remap_to_approved_target_pset(tmp_path):
     psets = ifcopenshell.util.element.get_psets(wall)
     assert psets["Pset_LegacyAssetData"]["AssetReference"] == "LEG-001"
     assert psets["Additional_Pset_GeneralCommon"]["AssetReference"] == "APPROVED-001"
+
+
+def test_base_and_specific_entity_fields_share_one_protocol_row():
+    model = ifcopenshell.file(schema="IFC4")
+    model.create_entity("IfcProject", GlobalId=new_guid(), Name="P")
+    door = model.create_entity("IfcDoor", GlobalId=new_guid(), Name="Door A")
+    pset = ifcopenshell.api.run("pset.add_pset", model, product=door, name="Pset_DoorCommon")
+    ifcopenshell.api.run("pset.edit_pset", model, pset=pset, properties={"FireRating": "FD60"})
+
+    data = extract_protocol_to_dataframe(model, default_protocol_config())
+    rows = data[data["GlobalId"] == door.GlobalId]
+
+    assert len(rows.index) == 1
+    assert rows.iloc[0]["Asset Name"] == "Door A"
+    assert rows.iloc[0]["Fire Rating"] == "FD60"
+    assert rows.iloc[0]["Protocol Entity"] == "IfcElement | IfcDoor"

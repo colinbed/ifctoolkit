@@ -45,7 +45,18 @@ def _association_rels(element):
     file = getattr(getattr(element, "wrapped_data", None), "file", None)
     if file:
         rels.extend([r for r in file.by_type("IfcRelAssociatesClassification") if element in (r.RelatedObjects or [])])
-    return rels
+    # Recent ifcopenshell releases expose the same relationship through both
+    # HasAssociations and the file scan. Preserve ordering while returning each
+    # IFC relationship once.
+    unique = []
+    seen = set()
+    for rel in rels:
+        key = rel.id() if hasattr(rel, "id") else id(rel)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(rel)
+    return unique
 
 
 def attach_classification(model, element, system_name: str, identification: str, name: Optional[str] = None):

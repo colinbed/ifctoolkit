@@ -74,10 +74,21 @@ def test_public_auth_pages_and_anonymous_navigation_render():
     assert ">Log in<" in homepage.text
     assert ">Create account<" in homepage.text
 
-    assert request("GET", "/login").status_code == 200
-    assert request("GET", "/signup").status_code == 200
-    assert request("GET", "/forgot-password").status_code == 200
+    login = request("GET", "/login")
+    assert login.status_code == 200
+    assert login.text.count('name="email"') == 1
+    assert login.text.count('name="password"') == 1
+
+    signup = request("GET", "/signup")
+    assert signup.status_code == 200
+    assert signup.text.count('name="email"') == 1
+    assert signup.text.count('name="password"') == 1
+
+    forgot = request("GET", "/forgot-password")
+    assert forgot.status_code == 200
+    assert 'name="password"' not in forgot.text
     assert request("GET", "/reset-password").status_code == 200
+    assert request("GET", "/logout").status_code == 405
 
 
 def test_private_routes_redirect_anonymous_users_to_login():

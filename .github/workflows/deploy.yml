@@ -19,8 +19,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+
       - name: Run tests
-        run: pytest tests/test_public_pages.py tests/test_runtime_startup.py tests/test_session_upload_route_alignment.py -q
+        run: >-
+          python -m pytest
+          tests/test_auth_routes.py
+          tests/test_ifc_protocol.py
+          tests/test_public_pages.py
+          tests/test_runtime_startup.py
+          tests/test_session_upload_route_alignment.py
+          tests/test_cobie_qa_checker.py
+          tests/test_deployment_hardening.py
+          tests/test_session_retention_security.py
+          -q
 
       - name: Block tracked local secret files
         run: python scripts/check_tracked_secrets.py
@@ -59,6 +78,17 @@ jobs:
           mkdir -p ~/.kube
           umask 077
           printf '%s' "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+
+      - name: Verify cluster runtime secrets
+        run: |
+          kubectl get secret ifctoolkit-auth >/dev/null || {
+            echo "Kubernetes secret ifctoolkit-auth is missing. Configure AUTH_SECRET, SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY before deploying." >&2
+            exit 1
+          }
+          kubectl get secret ghcr-secret >/dev/null || {
+            echo "Kubernetes image pull secret ghcr-secret is missing." >&2
+            exit 1
+          }
 
       - name: Deploy immutable image
         run: |

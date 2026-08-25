@@ -929,7 +929,14 @@ function fallbackExcelProtocol() {
           {
             id: "asset_type",
             label: "Asset Type",
-            source: { kind: "attribute", attribute: "ObjectType" },
+            source: {
+              kind: "first_non_empty",
+              sources: [
+                { kind: "attribute", attribute: "ObjectType" },
+                { kind: "predefined_type" },
+                { kind: "constant", value: "UNCLASSIFIED" },
+              ],
+            },
             datatype: "text",
             editable: true,
             write: { enabled: true, target: { kind: "attribute", attribute: "ObjectType" } },
@@ -941,6 +948,53 @@ function fallbackExcelProtocol() {
             datatype: "text",
             editable: true,
             write: { enabled: true, target: { kind: "type_attribute", attribute: "Name" } },
+          },
+          {
+            id: "manufacturer",
+            label: "Manufacturer",
+            source: {
+              kind: "type_property",
+              pset: "Pset_ManufacturerTypeInformation",
+              property: "Manufacturer",
+            },
+            datatype: "text",
+            editable: true,
+            write: {
+              enabled: true,
+              create_if_missing: true,
+              target: {
+                kind: "type_property",
+                pset: "Pset_ManufacturerTypeInformation",
+                property: "Manufacturer",
+              },
+            },
+          },
+          {
+            id: "uniclass_pr",
+            label: "Uniclass Pr",
+            source: {
+              kind: "first_non_empty",
+              sources: [
+                { kind: "classification", system: "Uniclass Pr Products", value: "reference" },
+                {
+                  kind: "property",
+                  pset: "Additional_Pset_GeneralCommon",
+                  property: "UniclassPr",
+                },
+              ],
+            },
+            datatype: "text",
+            editable: true,
+            write: {
+              enabled: true,
+              create_if_missing: true,
+              data_type: "IfcLabel",
+              target: {
+                kind: "property",
+                pset: "Additional_Pset_GeneralCommon",
+                property: "UniclassPr",
+              },
+            },
           },
         ],
       },

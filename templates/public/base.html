@@ -6,8 +6,10 @@
     <title>{{ page.title }} | IFC Toolkit</title>
     <meta name="description" content="{{ page.description or page.subtitle }}" />
     <link rel="stylesheet" href="{{ asset_url('style.css') }}" />
+    <link rel="stylesheet" href="{{ asset_url('auth.css') }}" />
   </head>
   <body class="public-site">
+    {% set user = auth_user(request) %}
     <header class="public-header">
       <a class="public-brand" href="/" aria-label="IFC Toolkit home">
         <img src="/static/brand/ifctoolkit-logo-horizontal.png" alt="ifctoolkit" />
@@ -22,6 +24,13 @@
         <a class="{% if page.active=='compliance' %}active{% endif %}" href="/compliance">Compliance</a>
         <a class="{% if page.active=='pricing' %}active{% endif %}" href="/pricing">Pricing</a>
         <a class="{% if page.active=='contact' %}active{% endif %}" href="/contact">Contact</a>
+        {% if user %}
+          <a href="/account">Account</a>
+          <form class="nav-auth-form" action="/logout" method="post"><button class="public-nav-action" type="submit">Log out</button></form>
+        {% else %}
+          <a href="/login">Log in</a>
+          <a href="/signup">Create account</a>
+        {% endif %}
         <a class="public-button small" href="/app">Get Started</a>
       </nav>
     </header>
@@ -44,7 +53,7 @@
           var isOpen = nav.classList.toggle("is-open");
           toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
         });
-        nav.querySelectorAll("a").forEach(function (link) {
+        nav.querySelectorAll("a, button").forEach(function (link) {
           link.addEventListener("click", function () {
             nav.classList.remove("is-open");
             toggle.setAttribute("aria-expanded", "false");

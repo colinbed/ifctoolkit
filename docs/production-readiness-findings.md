@@ -12,16 +12,20 @@
 | Debug data | Debug endpoints exposed filesystem paths. | Disabled debug endpoints by default and removed `upload_root` from session lookup. | Add admin auth if diagnostics are re-enabled. |
 | Non-root container | Container ran as root. | Dockerfile now creates and uses UID/GID 10001. | Evaluate read-only root filesystem after moving static hashing to build time. |
 | CI/CD images | Workflow deployed `latest`. | Builds SHA and latest tags; deploys the SHA tag. | Add vulnerability scanning and full ingress upload smoke test. |
+| Authentication | The combined branch mixed SQLite middleware imports with Supabase routes and did not inject Supabase settings in Kubernetes. | Removed the obsolete imports, retained one Supabase session middleware, added readiness validation and wired an out-of-band Kubernetes Secret. | Configure and rotate `ifctoolkit-auth`; allow the production callback URL in Supabase. |
 
 ## Configuration variables and defaults
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_TEMP_ROOT` | `/tmp/ifctoolkit` | Root for temporary session/job/work directories. |
+| `AUTH_SECRET` | none | Required signing key for the Supabase browser-session cookie. |
+| `SUPABASE_URL` | none | Required Supabase project/Auth URL. |
+| `SUPABASE_PUBLISHABLE_KEY` | none | Required publishable key; never configure a service-role key. |
 | `FILE_RETENTION_MINUTES` | `360` in app, `30` in Kubernetes | Session retention TTL. Must be 5-1440 minutes. |
 | `MIN_READY_TEMP_FREE_BYTES` | `536870912` | Minimum free temp space required for readiness. |
 | `MAX_REQUEST_BODY_BYTES` | `MAX_UPLOAD_BYTES + 25000000` | Middleware content-length request cap. |
-| `MAX_UPLOAD_BYTES` | `1200000000` | Current general per-file upload cap. |
+| `MAX_UPLOAD_BYTES` | `MAX_UPLOAD_SIZE_MB × 1024²` | Current general per-file upload cap. |
 | `MAX_UPLOAD_MB` | `50` | COBie-specific upload cap in MiB-equivalent calculation. |
 | `HEAVY_JOB_TIMEOUT_SECONDS` | `900` | Heavy job timeout setting. |
 | `DEPLOYED_GIT_SHA` | `unknown` in manifest, set by CI | Deployed image source revision exposed by health/build info. |

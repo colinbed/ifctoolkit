@@ -1879,7 +1879,12 @@ def run_cobieqc_native(input_xlsx_path: str, stage: str, job_dir: str, resources
         html_logs, html_error = renderer.render(svrl_xml_path, html_path, summary, warnings)
         logs.extend(html_logs)
         html_text = html_path.read_text(encoding="utf-8", errors="replace") if html_path.exists() else ""
-        if svrl_diagnostics["failed_asserts"] > 0 and "no errors" in html_text.lower():
+        legacy_mismatch_detected = any(
+            "legacy_rendered_no_errors_with_failed_asserts" in item for item in html_logs
+        )
+        if svrl_diagnostics["failed_asserts"] > 0 and (
+            "no errors" in html_text.lower() or legacy_mismatch_detected
+        ):
             sample_ids = [item["id"] for item in svrl_diagnostics["failed_assert_samples"][:5]]
             warning = (
                 "HARD WARNING: SVRL contains failed-asserts but HTML rendered 'No Errors'. "

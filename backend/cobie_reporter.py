@@ -17,12 +17,14 @@ def write_csv(result: CobieValidationResult, path: str|Path) -> Path:
     path=Path(path)
     with path.open("w", newline="", encoding="utf-8") as f:
         w=csv.DictWriter(f, fieldnames=ISSUE_FIELDS); w.writeheader()
-        for issue in result.issues: w.writerow(issue.dict())
+        for issue in result.issues:
+            payload = issue.model_dump() if hasattr(issue, "model_dump") else issue.dict()
+            w.writerow(payload)
     return path
 
 def write_excel_report(result: CobieValidationResult, path: str|Path, file_size: int = 0, environment: str = "production") -> Path:
     path=Path(path); wb=Workbook(); ws=wb.active; ws.title="Summary"
-    rows=[["Original file name",result.original_filename],["Validation date/time",result.validation_date.isoformat()+"Z"],["Rule pack used",result.rule_pack],["Overall status",result.summary.overall_status],["Error count",result.summary.errors],["Warning count",result.summary.warnings],["Info count",result.summary.info],["Sheets checked",result.summary.sheets_checked],["Rows checked",result.summary.rows_checked],["Rules executed",result.summary.rules_executed]]
+    rows=[["Original file name",result.original_filename],["Validation date/time",result.validation_date.isoformat().replace("+00:00", "Z")],["Rule pack used",result.rule_pack],["Overall status",result.summary.overall_status],["Error count",result.summary.errors],["Warning count",result.summary.warnings],["Info count",result.summary.info],["Sheets checked",result.summary.sheets_checked],["Rows checked",result.summary.rows_checked],["Rules executed",result.summary.rules_executed]]
     for r in rows: ws.append(r)
     ws2=wb.create_sheet("Sheet Summary"); ws2.append(["Sheet name","Rows checked","Errors","Warnings","Info","Status"])
     for s in result.sheet_summary: ws2.append([s.sheet_name,s.rows_checked,s.errors,s.warnings,s.info,s.status])

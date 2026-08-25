@@ -2,7 +2,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.test-tmp/
+.vs/
 .env.local
+/ifctoolkit/
 
 # COBieQC runtime/vendor assets are intentionally not source-controlled.
 /vendor/cobieqc/

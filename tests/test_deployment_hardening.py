@@ -23,6 +23,15 @@ def test_kubernetes_deployment_local_storage_safety_controls():
     assert "automountServiceAccountToken: false" in deployment
 
 
+def test_kubernetes_deployment_sources_supabase_auth_from_secret():
+    deployment = (ROOT / "k8s" / "deployment.yaml").read_text()
+
+    for name in ["AUTH_SECRET", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY"]:
+        assert f"- name: {name}" in deployment
+        assert f"key: {name}" in deployment
+    assert deployment.count("name: ifctoolkit-auth") == 3
+
+
 def test_dockerfile_runs_as_non_root():
     dockerfile = (ROOT / "Dockerfile").read_text()
 
@@ -45,3 +54,6 @@ def test_ci_deploys_immutable_image_and_checks_kube_secret():
     assert "kubectl set image deployment/ifctoolkit ifctoolkit=\"$IMAGE_REPO:$IMAGE_TAG\"" in workflow
     assert "kubectl rollout restart" not in workflow
     assert "KUBE_CONFIG GitHub secret is not configured" in workflow
+    assert "actions/setup-python@v5" in workflow
+    assert "python -m pip install -r requirements.txt" in workflow
+    assert "kubectl get secret ifctoolkit-auth" in workflow

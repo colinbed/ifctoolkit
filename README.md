@@ -14,13 +14,13 @@ pinned: false
 
 IFC Toolkit is a FastAPI-based, SaaS-ready IFC validation product for `ifctoolkit.com`. It combines a public marketing site, private authenticated workspace, organisation-ready account model, and the existing IFC/COBie processing utilities.
 
-## SaaS MVP shell
+## Application architecture
 
 ```bash
 uvicorn app:app --reload
 ```
 
-Open `http://localhost:8000`. Existing prototype utilities remain available from `/legacy/upload` while they are progressively integrated into the authenticated workspace.
+Open `http://localhost:8000`. Public marketing and existing IFC tools remain available alongside the private `/app` workspace. Authentication is provided only by Supabase Auth; the former local SQLite/password implementation is not part of the runtime.
 
 Local `.env` files are intentionally ignored and must not be committed. Configure environment variables in your shell, local process manager, or deployment platform instead. Production Kubernetes deployments should continue to source runtime configuration from Secrets and ConfigMaps with `secretKeyRef` and `configMapKeyRef` entries rather than committing credentials or writing them directly into manifests.
 
@@ -28,20 +28,25 @@ Local `.env` files are intentionally ignored and must not be committed. Configur
 
 | Variable | Required for | Description | Safe example format |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | SaaS database-backed jobs/accounts | Database connection URL used by database-backed features. | `postgresql://app_user:<password>@db.example.internal:5432/ifctoolkit` |
+| `DATABASE_URL` | Database-backed IFC jobs | Database connection URL used by the asynchronous extraction queue. It is not used for authentication. | `postgresql://app_user:<password>@db.example.internal:5432/ifctoolkit` |
 | `STORAGE_BUCKET` | Object-storage deployments | Bucket/container name for uploaded file storage when external storage is enabled. | `ifctoolkit-uploads-prod` |
 | `STORAGE_REGION` | Object-storage deployments | Cloud/object-storage region. | `gb-london-1` |
 | `STORAGE_ENDPOINT` | S3-compatible storage | S3-compatible endpoint URL, when required by the provider. | `https://object-storage.example.internal` |
 | `AUTH_SECRET` | Production authentication | Strong random secret for signed auth/session cookies. Generate a unique production value and keep it in a secret manager. | `<generate-with-secret-manager>` |
 | `APP_URL` | Production authentication/links | Public base URL for the deployed app. | `https://ifctoolkit.example.com` |
+| `SUPABASE_URL` | Authentication | Supabase project URL. A URL already ending in `/auth/v1` is also accepted. | `https://<project-ref>.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | Authentication | Supabase publishable key used for Auth and user-scoped REST calls. Never use a service-role key here. | `<supabase-publishable-key>` |
+| `SUPABASE_AUTH_TIMEOUT_SECONDS` | Authentication | Optional outbound Supabase request timeout. | `10` |
 | `STRIPE_SECRET_KEY` | Billing integrations | Stripe secret API key, if billing is enabled. Keep it in a secret manager. | `<stripe-secret-key-from-provider>` |
 | `EMAIL_PROVIDER_KEY` | Transactional email | Provider API key for outbound email, if enabled. Keep it in a secret manager. | `<email-provider-secret-key>` |
 | `FILE_RETENTION_MINUTES` | Upload/session retention | Number of minutes to retain temporary uploaded files before cleanup. | `30` |
 | `MAX_UPLOAD_SIZE_MB` | Upload limits | Maximum upload size in MiB for application-level validation. | `1200` |
-| `SAAS_DB_PATH` | Local SQLite development | SQLite path for local SaaS metadata when not using an external database. | `data/ifc_toolkit.db` |
 
+For Supabase Auth, set the project Site URL to the production `APP_URL` and allow `<APP_URL>/auth/callback` as a redirect URL for email confirmation and password recovery. If a `public.profiles` table is enabled for optional profile data, it must use row-level security policies that restrict each user to their own row. The application never requires or accepts a Supabase service-role key.
 
-Uploaded files are processed in temporary session storage and are intended to be automatically deleted after validation. IFC Toolkit does not use uploaded files to train AI models. Production deployments must set a strong `AUTH_SECRET`, use HTTPS, configure UK-region storage, and run a scheduled retention worker.
+The Kubernetes manifest reads `AUTH_SECRET`, `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` from an out-of-band Secret named `ifctoolkit-auth`. Do not commit a Secret manifest or literal values.
+
+Uploaded files are processed in temporary session storage and are automatically considered for deletion at startup and during session/job cleanup. IFC Toolkit does not use uploaded files to train AI models. Production deployments must use HTTPS, configure UK-region storage, and add an external scheduled cleanup if retention must be enforced even while the service receives no traffic.
 
 See [`docs/saas-mvp.md`](docs/saas-mvp.md) for deployment configuration, migration steps, and follow-up work.
 
@@ -114,7 +119,7 @@ COBie QC is now a built-in IFC Toolkit page available at **/tools/cobieqc** (no 
 
 ### Runtime requirements
 
-- Java runtime is required because the backend executes `CobieQcReporter.jar`.
+- The supported default is the native Python engine (`COBIEQC_ENGINE=python`). Java and `CobieQcReporter.jar` are optional and only required when explicitly selecting `COBIEQC_ENGINE=java`.
 - Container web runtimes must bind to `0.0.0.0:$PORT` (with local fallback `8000`).
 - A lightweight health endpoint is available at `GET /health` for platform healthchecks.
 - Production deployments that run COBie QC should mount persistent runtime assets at `/data` or configure equivalent object storage/runtime asset paths.
@@ -140,7 +145,7 @@ COBie QC is now a built-in IFC Toolkit page available at **/tools/cobieqc** (no 
   - `Xms` must be less than or equal to `Xmx`; invalid values fail fast with an explicit runtime error.
 - COBieQC Java runs are serialized with a process lock so only one JVM executes at a time per app container.
 - Hugging Face Docker Spaces install Java from `packages.txt` (`openjdk-21-jre-headless`).
-- The repo `Dockerfile` (used for local/containerized runs) also installs `openjdk-21-jre-headless`.
+- The repo `Dockerfile` uses the native Python engine and does not install Java. Build a Java-enabled image separately before selecting the Java engine.
 - Reports are generated into per-job data directories (`$IFC_APP_DATA_DIR/jobs/cobieqc/<job_id>/`) instead of `COBieQC/reports/`.
 
 ### API endpoints

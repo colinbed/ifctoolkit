@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
@@ -30,6 +31,8 @@ def load_sheet_config() -> List[Dict[str, Any]]:
 @lru_cache
 def load_rulepack(rule_pack: str | None) -> Dict[str, Any]:
     key = (rule_pack or "ifctoolkit-recommended").strip() or "ifctoolkit-recommended"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", key):
+        key = "ifctoolkit-recommended"
     path = RULEPACK_DIR / f"{key}.json"
     if not path.exists(): path = RULEPACK_DIR / "ifctoolkit-recommended.json"
     return json.loads(path.read_text(encoding="utf-8"))

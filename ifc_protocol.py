@@ -388,34 +388,54 @@ def _field_column(field: Dict[str, Any]) -> str:
     return str(field.get("label") or field.get("id") or "Field")
 
 
+def _entity_config_matches(element: Any, entity_cfg: Dict[str, Any]) -> bool:
+    entity_name = str(entity_cfg.get("entity") or "").strip()
+    if not entity_name:
+        return False
+    if element.is_a() == entity_name:
+        return True
+    if not entity_cfg.get("include_subtypes", True):
+        return False
+    try:
+        return bool(element.is_a(entity_name))
+    except Exception:
+        return False
+
+
 def extract_protocol_to_dataframe(model: Any, protocol_payload: Dict[str, Any], source_file_name: str = "") -> pd.DataFrame:
     protocol = normalize_protocol(protocol_payload)
     if not protocol:
         return pd.DataFrame(columns=BASE_PROTOCOL_COLUMNS)
 
-    rows: List[Dict[str, Any]] = []
-    for entity_cfg in protocol.get("entities", []):
-        if entity_cfg.get("enabled") is False:
-            continue
+    enabled_configs = [
+        entity_cfg
+        for entity_cfg in protocol.get("entities", [])
+        if entity_cfg.get("enabled") is not False
+    ]
+    elements_by_key: Dict[str, Any] = {}
+    for entity_cfg in enabled_configs:
         entity_name = str(entity_cfg.get("entity") or "").strip()
-        fields = entity_cfg.get("fields") or []
         for element in _iter_entity_instances(model, entity_name, bool(entity_cfg.get("include_subtypes", True))):
-            if not getattr(element, "GlobalId", None):
-                continue
-            row: Dict[str, Any] = {
-                "GlobalId": getattr(element, "GlobalId", ""),
-                "StepId": element.id(),
-                "IFC Entity": element.is_a(),
-                "Protocol Entity": entity_name,
-                "SourceFile": source_file_name,
-            }
-            for field in fields:
+            global_id = str(getattr(element, "GlobalId", "") or "")
+            if global_id:
+                elements_by_key.setdefault(global_id, element)
+
+    rows: List[Dict[str, Any]] = []
+    for element in sorted(elements_by_key.values(), key=lambda item: item.id()):
+        matching_configs = [entity_cfg for entity_cfg in enabled_configs if _entity_config_matches(element, entity_cfg)]
+        row: Dict[str, Any] = {
+            "GlobalId": getattr(element, "GlobalId", ""),
+            "StepId": element.id(),
+            "IFC Entity": element.is_a(),
+            "Protocol Entity": " | ".join(str(item.get("entity") or "") for item in matching_configs),
+            "SourceFile": source_file_name,
+        }
+        for entity_cfg in matching_configs:
+            for field in entity_cfg.get("fields") or []:
                 row[_field_column(field)] = read_field(model, element, field, row_values=row)
-            rows.append(row)
+        rows.append(row)
     columns = list(BASE_PROTOCOL_COLUMNS)
-    for entity_cfg in protocol.get("entities", []):
-        if entity_cfg.get("enabled") is False:
-            continue
+    for entity_cfg in enabled_configs:
         for field in entity_cfg.get("fields", []) or []:
             column = _field_column(field)
             if column not in columns:
@@ -735,21 +755,18 @@ def write_source(model: Any, element: Any, source: Dict[str, Any], value: Any, w
     return None, None, f"Skipped: target kind {kind} is read-only"
 
 
-def _fields_for_entity(protocol: Dict[str, Any], protocol_entity: str, ifc_entity: str) -> List[Dict[str, Any]]:
-    exact: List[Dict[str, Any]] = []
-    inherited: List[Dict[str, Any]] = []
+def _fields_for_entity(protocol: Dict[str, Any], protocol_entity: str, element: Any) -> List[Dict[str, Any]]:
+    configured_entities = {item.strip() for item in protocol_entity.split("|") if item.strip()}
+    fields_by_column: Dict[str, Dict[str, Any]] = {}
     for entity_cfg in protocol.get("entities", []) or []:
         if entity_cfg.get("enabled") is False:
             continue
         entity_name = str(entity_cfg.get("entity") or "")
-        if entity_name == protocol_entity:
-            exact.extend(entity_cfg.get("fields") or [])
+        if entity_name not in configured_entities and not _entity_config_matches(element, entity_cfg):
             continue
-        if not entity_cfg.get("include_subtypes", True):
-            continue
-        if entity_name == ifc_entity:
-            inherited.extend(entity_cfg.get("fields") or [])
-    return exact or inherited
+        for field in entity_cfg.get("fields") or []:
+            fields_by_column[_field_column(field)] = field
+    return list(fields_by_column.values())
 
 
 def apply_protocol_workbook(model: Any, excel: Any) -> List[Dict[str, Any]]:
@@ -770,7 +787,7 @@ def apply_protocol_workbook(model: Any, excel: Any) -> List[Dict[str, Any]]:
             element = None
         if element is None:
             continue
-        fields = _fields_for_entity(protocol, str(clean_protocol_value(row.get("Protocol Entity")) or ""), element.is_a())
+        fields = _fields_for_entity(protocol, str(clean_protocol_value(row.get("Protocol Entity")) or ""), element)
         for field in fields:
             write_cfg = field.get("write") or {}
             if not field.get("editable", True) or not write_cfg.get("enabled"):

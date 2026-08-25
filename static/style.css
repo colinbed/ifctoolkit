@@ -2077,7 +2077,6 @@ body.public-site {
 .public-brand span { font-size: 13px; color:#53627A; font-weight:700; }
 .public-menu-toggle { display:none; align-items:center; justify-content:center; border:1px solid #D8E4F6; border-radius:999px; padding:10px 14px; background:white; color:var(--public-deep); font-weight:900; cursor:pointer; }
 .public-nav { display:flex; flex-direction:row; align-items:center; gap:8px; flex-wrap:nowrap; justify-content:flex-end; margin-left:auto; }
-.public-nav { display:flex; flex-direction:row; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .public-nav a { text-decoration:none; padding:10px 12px; border-radius:999px; color:#33415C; font-weight:700; font-size:14px; }
 .public-nav a.active:not(.public-button), .public-nav a:hover:not(.public-button) { background:var(--public-off-white); color:var(--public-blue); }
 .public-button { display:inline-flex; align-items:center; justify-content:center; gap:8px; border-radius:999px; padding:13px 20px; background:var(--public-blue); color:white!important; text-decoration:none; font-weight:800; border:1px solid var(--public-blue); box-shadow:0 12px 30px rgba(30,111,255,.22); }

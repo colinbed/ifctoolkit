@@ -103,12 +103,16 @@ from backend.ifc_area_spaces import (
     scan_ifc_area_spaces_ifcopenshell,
     scan_ifc_for_area_spaces,
 )
-from backend.ifc_area_spaces_router import build_area_spaces_router
 from backend.ifc_move_rotate import TransformRequest, transform_ifc_file
 from backend.project_tables import get_tables_for_project_slug
-from ifc_app.saas import initialise as initialise_saas
-from ifc_app.saas import CookieSessionMiddleware
 from ifc_app.saas import router as saas_router
+from ifc_app.supabase_auth import (
+    AuthSessionMiddleware,
+    get_current_user,
+    missing_auth_environment,
+    user_display_name,
+    validate_auth_environment,
+)
 
 try:
     import gc
@@ -1303,7 +1307,7 @@ def _extract_uniclass(entity: Any, target_name: str, is_ifc2x3: bool) -> Tuple[s
     return "", ""
 
 
-_EN_ENTITIES_NOOP_VALUES = {"", "n/a", "na", "none", "null"}
+_EN_ENTITIES_NOOP_VALUES = {"", "n/a", "na", "none", "null", "not classified"}
 
 
 def _normalize_en_entities_key(value: Any) -> str:
@@ -1916,10 +1920,13 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
                     break
             if project_number:
                 break
-    project_data.append({"DataType": "Project", "Name": getattr(project, "Name", "") if project else "", "Description": getattr(project, "Description", "") if project else "", "Phase": getattr(project, "Phase", "") if project else "", "ProjectNumber": project_number, "UniclassEnReference": "", "UniclassEnName": ""})
-    project_data.append({"DataType": "Site", "Name": getattr(site, "Name", "") if site else "", "Description": getattr(site, "Description", "") if site else "", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "", "UniclassEnName": ""})
+    # Keep the editable classification columns textual when reopened by pandas.
+    # A completely blank Excel column is inferred as float in pandas 3+, which
+    # prevents users and integrations from assigning a classification string.
+    project_data.append({"DataType": "Project", "Name": getattr(project, "Name", "") if project else "", "Description": getattr(project, "Description", "") if project else "", "Phase": getattr(project, "Phase", "") if project else "", "ProjectNumber": project_number, "UniclassEnReference": "Not classified", "UniclassEnName": "Not classified"})
+    project_data.append({"DataType": "Site", "Name": getattr(site, "Name", "") if site else "", "Description": getattr(site, "Description", "") if site else "", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "Not classified", "UniclassEnName": "Not classified"})
     project_data.append({"DataType": "Building", "Name": getattr(building, "Name", "") if building else "", "Description": getattr(building, "Description", "") if building else "", "Phase": "", "ProjectNumber": "", "UniclassEnReference": b_en_ref, "UniclassEnName": b_en_name})
-    project_data.append({"DataType": "DetectedSchema", "Name": schema_for_lookup, "Description": "Parsed from FILE_SCHEMA in IFC header", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "", "UniclassEnName": ""})
+    project_data.append({"DataType": "DetectedSchema", "Name": schema_for_lookup, "Description": "Parsed from FILE_SCHEMA in IFC header", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "Not classified", "UniclassEnName": "Not classified"})
     if schema_warning:
         project_data.append({"DataType": "SchemaWarning", "Name": schema_warning, "Description": "Fallback applied", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "", "UniclassEnName": ""})
     project_df = pd.DataFrame(project_data)
@@ -6376,6 +6383,7 @@ def _run_cobieqc_job(job_id: str) -> None:
 
 def startup_cleanup() -> None:
     SESSION_STORE.cleanup_stale()
+    _cleanup_cobie_jobs()
     temp_status = _temp_root_status()
     APP_LOGGER.info("Temporary storage root=%s total_bytes=%s free_bytes=%s session_ttl_seconds=%s max_upload_bytes=%s max_request_body_bytes=%s", temp_status["path_configured"], temp_status["total_bytes"], temp_status["free_bytes"], int(SESSION_STORE.ttl.total_seconds()), MAX_UPLOAD_BYTES, MAX_REQUEST_BODY_BYTES)
     COBIEQC_JOB_STORE.cleanup_old_jobs()
@@ -6595,6 +6603,16 @@ def health_live():
 
 @app.get("/health/ready")
 def health_ready():
+    missing_auth = missing_auth_environment()
+    if missing_auth:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "reason": "auth_configuration_missing",
+                "missing": missing_auth,
+            },
+        )
     try:
         temp_status = _temp_root_status()
     except Exception as exc:
@@ -6806,23 +6824,30 @@ def cobie_rulepacks():
 
 
 def _cobie_job_dir(job_id: str) -> Path:
-    root = Path(os.getenv("TEMP_UPLOAD_DIR", tempfile.gettempdir())) / "ifctoolkit_cobie_qa" / job_id
+    root = Path(os.getenv("TEMP_UPLOAD_DIR", str(APP_TEMP_ROOT))) / "cobie_qa" / job_id
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _cleanup_cobie_jobs() -> None:
-    retention = int(os.getenv("FILE_RETENTION_HOURS", "24"))
-    cutoff = time.time() - retention * 3600
-    root = Path(os.getenv("TEMP_UPLOAD_DIR", tempfile.gettempdir())) / "ifctoolkit_cobie_qa"
+    cutoff = time.time() - SESSION_STORE.ttl.total_seconds()
+    root = Path(os.getenv("TEMP_UPLOAD_DIR", str(APP_TEMP_ROOT))) / "cobie_qa"
+    expired_job_ids: Set[str] = set()
     if root.exists():
         for child in root.iterdir():
             if child.is_dir() and child.stat().st_mtime < cutoff:
+                expired_job_ids.add(child.name)
                 shutil.rmtree(child, ignore_errors=True)
+    for job_id, job in list(COBIE_QA_JOBS.items()):
+        job_dir = Path(str(job.get("job_dir") or root / job_id))
+        if job_id in expired_job_ids or not job_dir.exists():
+            COBIE_QA_JOBS.pop(job_id, None)
 
 
-def _result_payload(result):
-    return result.dict() if hasattr(result, "dict") else result.model_dump()
+def _model_payload(value: Any) -> Dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return value.dict()
 
 @app.post("/api/cobie/validate")
 async def cobie_validate(request: Request, file: UploadFile = File(...), rule_pack: str = Form(None)):
@@ -6856,9 +6881,10 @@ async def cobie_validate(request: Request, file: UploadFile = File(...), rule_pa
             exports["marked_up_xlsx"] = marked.name
         result.exports = exports
         result.processing_duration_seconds = round(time.perf_counter() - started, 3)
-        COBIE_QA_JOBS[job_id].update({"status": "complete", "progress": 1.0, "message": "Complete", "summary": result.summary.dict(), "result": _result_payload(result), "exports": exports})
+        summary_payload = _model_payload(result.summary)
+        COBIE_QA_JOBS[job_id].update({"status": "complete", "progress": 1.0, "message": "Complete", "summary": summary_payload, "result": _model_payload(result), "exports": exports})
         APP_LOGGER.info("cobie_qa_complete job_id=%s file_size=%s duration=%s issues=%s errors=%s warnings=%s", job_id, written, result.processing_duration_seconds, result.summary.total_issues, result.summary.errors, result.summary.warnings)
-        return {"job_id": job_id, "status": "complete", "progress": 1.0, "summary": result.summary.dict(), "exports": exports}
+        return {"job_id": job_id, "status": "complete", "progress": 1.0, "summary": summary_payload, "exports": exports}
     except Exception as exc:
         APP_LOGGER.exception("cobie_qa_failed job_id=%s file_size=%s", job_id, written)
         COBIE_QA_JOBS[job_id].update({"status": "error", "progress": 1.0, "message": str(exc)})
@@ -7241,6 +7267,7 @@ def _resolve_session_ifc_file_paths(session_id: str, file_names: List[str]) -> L
     return output
 
 
+@app.get("/api/ifc/area-spaces/session-files")
 def area_spaces_session_files(session_id: str):
     normalized = _require_valid_session_id(session_id)
     root = Path(_ensure_session_dir_for_upload(normalized))
@@ -7251,6 +7278,7 @@ def area_spaces_session_files(session_id: str):
     return {"session_id": normalized, "files": files, "count": len(files)}
 
 
+@app.post("/api/ifc/area-spaces/scan")
 async def area_spaces_scan(payload: Dict[str, Any] = Body(...)):
     session_id = str(payload.get("session_id") or "").strip()
     requested = payload.get("file_names") or payload.get("file_ids")
@@ -7318,6 +7346,7 @@ async def area_spaces_scan(payload: Dict[str, Any] = Body(...)):
         return JSONResponse(status_code=500, content={"ok": False, "error": "AREA_SPACE_SCAN_FAILED", "message": str(exc), "stage": "scan_spaces"})
 
 
+@app.post("/api/ifc/area-spaces/purge")
 async def area_spaces_purge(payload: Dict[str, Any] = Body(...)):
     session_id = str(payload.get("session_id") or "").strip()
     selected = payload.get("selected_candidates")
@@ -7467,26 +7496,6 @@ def area_spaces_health():
         "max_purge_file_mb": AREA_SPACE_MAX_PURGE_FILE_MB,
         "memory_abort_percent": AREA_SPACE_MEMORY_ABORT_PERCENT,
     }
-
-
-area_spaces_router = build_area_spaces_router(
-    scan_handler=area_spaces_scan,
-    purge_handler=area_spaces_purge,
-    files_handler=area_spaces_session_files,
-)
-app.include_router(area_spaces_router)
-
-@app.get("/api/ifc/area-spaces/session-files")
-def area_spaces_session_files_direct(session_id: str):
-    return area_spaces_session_files(session_id)
-
-@app.post("/api/ifc/area-spaces/scan")
-async def area_spaces_scan_direct(payload: Dict[str, Any] = Body(...)):
-    return await area_spaces_scan(payload)
-
-@app.post("/api/ifc/area-spaces/purge")
-async def area_spaces_purge_direct(payload: Dict[str, Any] = Body(...)):
-    return await area_spaces_purge(payload)
 
 
 @app.get("/api/tools/cobieqc/health")

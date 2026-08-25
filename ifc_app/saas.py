@@ -297,7 +297,7 @@ async def establish_callback_session(request: Request):
     return JSONResponse({"redirect": destination})
 
 
-@router.api_route("/logout", methods=["GET", "POST"])
+@router.post("/logout")
 def logout(request: Request):
     session = request.scope.get("auth_session") or {}
     get_auth_service().sign_out(str(session.get("access_token") or ""))

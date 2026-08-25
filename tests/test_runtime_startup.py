@@ -51,6 +51,23 @@ def test_area_spaces_routes_registered_on_startup():
     assert ("/api/ifc/area-spaces/purge", ("POST",)) in route_methods
 
 
+def test_area_spaces_routes_are_registered_once():
+    expected = {
+        ("/api/ifc/area-spaces/session-files", "GET"),
+        ("/api/ifc/area-spaces/scan", "POST"),
+        ("/api/ifc/area-spaces/purge", "POST"),
+    }
+    counts = {item: 0 for item in expected}
+    for route in app.app.routes:
+        path = getattr(route, "path", "")
+        for method in (getattr(route, "methods", set()) or set()) - {"HEAD", "OPTIONS"}:
+            key = (path, method)
+            if key in counts:
+                counts[key] += 1
+
+    assert counts == {item: 1 for item in expected}
+
+
 def test_cobieqc_runtime_degrades_when_assets_missing(monkeypatch, tmp_path):
     missing_root = tmp_path / 'missing-assets'
     monkeypatch.setenv('COBIEQC_DATA_DIR', str(missing_root))

@@ -1,6 +1,7 @@
 from pathlib import Path
 from openpyxl import Workbook
 from backend.cobie_checker import validate_cobie_workbook
+from backend.cobie_rules import load_rulepack
 
 CORE = {
     "Contact":["Email","CreatedBy","CreatedOn","Company"],
@@ -102,3 +103,14 @@ def test_picklist_invalid_value(tmp_path):
     wb=load_workbook(p); wb['Facility']['F2']='parsecs'; wb.save(p)
     result=validate_cobie_workbook(p,'basic-cobie')
     assert 'FACILITY_LINEARUNITS_PICKLIST' in rule_ids(result)
+
+
+def test_rulepack_identifier_cannot_escape_configuration_directory():
+    assert load_rulepack("../../package")["id"] == "ifctoolkit-recommended"
+
+
+def test_cobie_frontend_inserts_workbook_values_as_text():
+    script = (Path(__file__).resolve().parent.parent / "static" / "cobie_qa.js").read_text()
+
+    assert "textContent" in script
+    assert "innerHTML" not in script
