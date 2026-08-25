@@ -1,0 +1,37 @@
+{% extends "saas/layout.html" %}
+{% block title %}Completing authentication · IFC Toolkit{% endblock %}
+{% block content %}
+<section class="auth">
+  <div class="callback-card">
+    <span class="eyebrow">Supabase Auth</span>
+    <h1>Completing authentication</h1>
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% else %}<p id="callback-status">Verifying your secure session…</p>{% endif %}
+    <p><a href="/login">Return to log in</a></p>
+  </div>
+</section>
+{% if not error %}
+<script>
+(() => {
+  const status = document.getElementById("callback-status");
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  const accessToken = hash.get("access_token");
+  const refreshToken = hash.get("refresh_token");
+  const type = hash.get("type") || "";
+  if (!accessToken) {
+    status.textContent = "This authentication link does not contain a session. Request a new link and try again.";
+    return;
+  }
+  fetch("/auth/session", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({access_token: accessToken, refresh_token: refreshToken, type})
+  }).then(async response => {
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Authentication failed.");
+    window.location.replace(data.redirect || "/app");
+  }).catch(error => { status.textContent = error.message; });
+})();
+</script>
+{% endif %}
+{% endblock %}

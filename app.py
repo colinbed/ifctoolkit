@@ -51,6 +51,17 @@ from mapping_store import (
     save_mapping_for_check,
 )
 from validation import validate_value
+from ifc_protocol import (
+    PROTOCOL_CONFIG_SHEET,
+    PROTOCOL_DATA_SHEET,
+    PROTOCOL_FIELDS_SHEET,
+    apply_protocol_workbook,
+    default_protocol_config,
+    extract_protocol_to_dataframe,
+    normalize_protocol,
+    protocol_fields_to_dataframe,
+    protocol_to_workbook_dataframe,
+)
 from cobieqc_service.jobs import (
     STATUS_DONE,
     STATUS_ERROR,
@@ -95,6 +106,8 @@ from backend.ifc_area_spaces import (
 from backend.ifc_area_spaces_router import build_area_spaces_router
 from backend.ifc_move_rotate import TransformRequest, transform_ifc_file
 from backend.project_tables import get_tables_for_project_slug
+from ifc_app.saas import router as saas_router
+from ifc_app.supabase_auth import AuthSessionMiddleware, get_current_user, user_display_name, validate_auth_environment
 
 try:
     import gc
@@ -125,9 +138,10 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 BACKEND_CONFIG_DIR = Path(__file__).resolve().parent / "backend" / "config"
 UTC = datetime.timezone.utc
 HEAVY_JOB_SEMAPHORE = threading.Semaphore(1)
-MAX_UPLOAD_BYTES = 1_200_000_000
-MAX_UPLOAD_GB = 1.2
-MAX_UPLOAD_DISPLAY = "1.2 GB"
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1200"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+MAX_UPLOAD_GB = round(MAX_UPLOAD_BYTES / (1024 ** 3), 2)
+MAX_UPLOAD_DISPLAY = f"{MAX_UPLOAD_MB} MB"
 REQUEST_BODY_LIMIT_HEADROOM_BYTES = 25_000_000
 MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + REQUEST_BODY_LIMIT_HEADROOM_BYTES
 MAX_IFC_BYTES = int(os.getenv("MAX_IFC_BYTES", str(80 * 1024 * 1024)))
@@ -1236,6 +1250,7 @@ class ExtractionPlan:
     include_spatial_fields: bool = True
     include_classifications: bool = True
     civil3d_extended: bool = False
+    protocol: Optional[Dict[str, Any]] = None
 
 
 class StageTimer:
@@ -1464,6 +1479,7 @@ def _parse_excel_extraction_plan(payload: Optional[Dict[str, Any]]) -> Extractio
         include_spatial_fields=include_spatial_fields,
         include_classifications=include_classifications,
         civil3d_extended=bool(payload.get("civil3d_extended", profile.get("civil3d_extended", False))),
+        protocol=normalize_protocol(payload.get("protocol")) if isinstance(payload.get("protocol"), dict) else None,
     )
 
 
@@ -1677,6 +1693,8 @@ def scan_model_for_excel_preview(ifc_path: str, timer: Optional[StageTimer] = No
     pset_names: Dict[str, int] = {}
     quantity_names: Dict[str, Dict[str, int]] = {}
     property_names_by_pset: Dict[str, Dict[str, int]] = {}
+    type_pset_names: Dict[str, int] = {}
+    type_property_names_by_pset: Dict[str, Dict[str, int]] = {}
     class_counts: Dict[str, int] = {}
     classification_names: Dict[str, int] = {}
     classification_targets = {
@@ -1712,6 +1730,11 @@ def scan_model_for_excel_preview(ifc_path: str, timer: Optional[StageTimer] = No
             add_pset_t = type_psets.get("Additional_Pset_GeneralCommon", {})
             cobie_dynamic_pairs.update(parse_required_pairs(add_pset_t.get("RequiredForCOBie", "")))
             cobie_dynamic_pairs.update(parse_required_pairs(add_pset_t.get("RequiredForCOBieComponent", "")))
+            for pset_name, values in type_psets.items():
+                type_pset_names[pset_name] = type_pset_names.get(pset_name, 0) + 1
+                type_property_names_by_pset.setdefault(pset_name, {})
+                for prop_name in values.keys():
+                    type_property_names_by_pset[pset_name][prop_name] = type_property_names_by_pset[pset_name].get(prop_name, 0) + 1
 
         for rel in getattr(elem, "IsDefinedBy", []) or []:
             if not rel.is_a("IfcRelDefinesByProperties"):
@@ -1766,6 +1789,8 @@ def scan_model_for_excel_preview(ifc_path: str, timer: Optional[StageTimer] = No
         "available_classes": [{"name": name, "count": count} for name, count in sorted(class_counts.items(), key=lambda x: (-x[1], x[0]))],
         "available_psets": [{"name": name, "count": count} for name, count in sorted(pset_names.items(), key=lambda x: (-x[1], x[0]))],
         "properties_by_pset": {name: sorted(props.keys()) for name, props in sorted(property_names_by_pset.items())},
+        "available_type_psets": [{"name": name, "count": count} for name, count in sorted(type_pset_names.items(), key=lambda x: (-x[1], x[0]))],
+        "type_properties_by_pset": {name: sorted(props.keys()) for name, props in sorted(type_property_names_by_pset.items())},
         "quantities_by_set": {name: sorted(props.keys()) for name, props in sorted(quantity_names.items())},
         "classification_systems": [{"name": name, "count": count, "is_uniclass_target": name in classification_targets} for name, count in sorted(classification_names.items(), key=lambda x: (-x[1], x[0]))],
         "cobie_pairs": [{"pset": pset, "property": prop} for pset, prop in all_cobie_pairs],
@@ -2077,6 +2102,16 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
         cobie_df = pd.DataFrame()
     timer.stop("cobie_extract")
 
+    timer.start("protocol_extract")
+    protocol_data_df = pd.DataFrame()
+    protocol_fields_df = pd.DataFrame()
+    protocol_config_df = pd.DataFrame()
+    if plan.protocol:
+        protocol_data_df = extract_protocol_to_dataframe(ifc, plan.protocol, source_file_name=source_file_name)
+        protocol_fields_df = protocol_fields_to_dataframe(plan.protocol)
+        protocol_config_df = protocol_to_workbook_dataframe(plan.protocol)
+    timer.stop("protocol_extract")
+
     timer.start("excel_write")
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         if "ProjectData" in plan.include_sheets:
@@ -2099,6 +2134,10 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             _sanitize_dataframe_for_excel(uniclass_ef_df).to_excel(writer, sheet_name="Uniclass_EF", index=False)
         if "ChangeLog" in plan.include_sheets:
             _sanitize_dataframe_for_excel(changelog_df).to_excel(writer, sheet_name="ChangeLog", index=False)
+        if plan.protocol:
+            _sanitize_dataframe_for_excel(protocol_data_df).to_excel(writer, sheet_name=PROTOCOL_DATA_SHEET, index=False)
+            _sanitize_dataframe_for_excel(protocol_fields_df).to_excel(writer, sheet_name=PROTOCOL_FIELDS_SHEET, index=False)
+            protocol_config_df.to_excel(writer, sheet_name=PROTOCOL_CONFIG_SHEET, index=False)
 
         if schema_for_lookup == "IFC2X3":
             mapping = load_ifc2x3_entity_mapping()
@@ -2172,6 +2211,8 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
 
         for lookup_sheet in (entities_sheet, predefs_sheet, mapping_sheet):
             workbook[lookup_sheet].sheet_state = "hidden"
+        if plan.protocol and PROTOCOL_CONFIG_SHEET in workbook.sheetnames:
+            workbook[PROTOCOL_CONFIG_SHEET].sheet_state = "hidden"
     validation_error = validate_workbook_after_export(output_path)
     if validation_error:
         APP_LOGGER.warning("Primary workbook export invalid, using safe fallback: %s", validation_error)
@@ -2179,6 +2220,10 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             for nm, df in (("ProjectData", project_df), ("Elements", elements_df), ("Types", types_df), ("RawEntities", raw_entities_df), ("Properties", props_df), ("COBieMapping", cobie_df), ("Uniclass_Pr", uniclass_pr_df), ("Uniclass_Ss", uniclass_ss_df), ("Uniclass_EF", uniclass_ef_df), ("ChangeLog", changelog_df)):
                 if nm in plan.include_sheets:
                     _sanitize_dataframe_for_excel(df).to_excel(safe_writer, sheet_name=nm, index=False)
+            if plan.protocol:
+                _sanitize_dataframe_for_excel(protocol_data_df).to_excel(safe_writer, sheet_name=PROTOCOL_DATA_SHEET, index=False)
+                _sanitize_dataframe_for_excel(protocol_fields_df).to_excel(safe_writer, sheet_name=PROTOCOL_FIELDS_SHEET, index=False)
+                protocol_config_df.to_excel(safe_writer, sheet_name=PROTOCOL_CONFIG_SHEET, index=False)
         validation_error = validate_workbook_after_export(output_path)
         if validation_error:
             raise HTTPException(status_code=500, detail={"message": "Excel export validation failed", "error": validation_error})
@@ -2186,7 +2231,7 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
     return {
         "path": output_path,
         "timings_ms": timer.as_payload(),
-        "counts": {"elements": len(elements), "types": len(all_types), "properties": len(prop_rows), "cobie_rows": len(cobie_rows)},
+        "counts": {"elements": len(elements), "types": len(all_types), "properties": len(prop_rows), "cobie_rows": len(cobie_rows), "protocol_rows": len(protocol_data_df.index) if plan.protocol else 0},
         "schema_detected": schema_for_lookup,
         "schema_warning": schema_warning,
     }
@@ -2968,6 +3013,10 @@ def update_ifc_from_excel(
     set_uniclass(uniclass_pr_df, "Uniclass Pr Products")
     set_uniclass(uniclass_ss_df, "Uniclass Ss Systems")
     set_uniclass(uniclass_ef_df, "Uniclass EF Elements Functions")
+
+    protocol_change_rows = apply_protocol_workbook(ifc, xls)
+    if protocol_change_rows:
+        change_log_rows.extend(protocol_change_rows)
 
     ifc.write(output_path)
     log_memory_stage(stage="IFC write/export", session_id=session_id, file_name=os.path.basename(output_path), file_size=os.path.getsize(output_path), endpoint=endpoint, started_at=started_at)
@@ -6418,6 +6467,7 @@ def _log_area_spaces_route_registration() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    validate_auth_environment(APP_LOGGER)
     startup_cleanup()
     _log_session_route_registration()
     _log_area_spaces_route_registration()
@@ -6427,12 +6477,20 @@ async def lifespan(_: FastAPI):
         shutdown_cleanup()
 
 
-app = FastAPI(title="IFC Toolkit Hub", lifespan=lifespan)
+app = FastAPI(title="IFC Toolkit", lifespan=lifespan)
+app.add_middleware(
+    AuthSessionMiddleware,
+    secret_key=os.getenv("AUTH_SECRET"),
+    https_only=os.getenv("APP_URL", "").startswith("https://"),
+)
+app.include_router(saas_router)
 app.mount("/static", CacheControlledStaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["asset_url"] = resolve_asset_url
 templates.env.globals["resolve_asset_url"] = resolve_asset_url
 templates.env.globals["frontend_build_id"] = FRONTEND_BUILD_ID
+templates.env.globals["auth_user"] = get_current_user
+templates.env.globals["user_display_name"] = user_display_name
 
 
 PUBLIC_PAGES = {
@@ -6440,7 +6498,9 @@ PUBLIC_PAGES = {
         "path": "/", "active": "home", "title": "Practical IFC tools, built for compliance.",
         "subtitle": "Clean, validate and improve IFC, COBie and project information using straightforward tools designed for construction information managers, BIM teams and digital delivery leads.",
     },
+    "features": {"path":"/features","active":"features","title":"Authentication, project workspaces and practical IFC tools.","subtitle":"Bring IFC processing, project information and Regulation 38 handover preparation into one clear workspace."},
     "tools": {"path":"/tools","active":"tools","title":"Practical tools for real-world information delivery.","subtitle":"Focused utilities for checking, cleaning, transforming and improving IFC and handover data."},
+    "help": {"path":"/help","active":"help","title":"Help with IFC Toolkit.","subtitle":"Find the right workflow, understand temporary processing sessions and get support with the toolkit."},
     "resources": {"path":"/resources","active":"resources","title":"Resources for BIM and information management teams.","subtitle":"Templates, checklists and practical guidance to help teams structure, validate and improve project information."},
     "pricing": {"path":"/pricing","active":"pricing","title":"Simple pricing for practical information QA.","subtitle":"Start with free tools, then upgrade as your projects, teams and reporting needs grow."},
     "compliance-security": {"path":"/compliance-security","active":"compliance-security","title":"Built for information you can trust.","subtitle":"Protecting project data through secure design, temporary processing and transparent information handling."},
@@ -6541,13 +6601,8 @@ def marketing_home_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/home.html", context={"request": request, "page": PUBLIC_PAGES["home"]})
 
 
-@app.get("/app", response_class=HTMLResponse)
+@app.get("/legacy/upload", response_class=HTMLResponse)
 def upload_page(request: Request):
-    return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
-
-
-@app.get("/app/dashboard", response_class=HTMLResponse)
-def app_dashboard_page(request: Request):
     return templates.TemplateResponse(request=request, name="upload.html", context={"request": request, "active": "upload"})
 
 
@@ -6559,6 +6614,20 @@ def cleaner_page(request: Request):
 @app.get("/excel", response_class=HTMLResponse)
 def excel_page(request: Request):
     return templates.TemplateResponse(request=request, name="excel.html", context={"request": request, "active": "excel"})
+
+
+@app.get("/excel/configurator", response_class=HTMLResponse)
+def excel_configurator_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="excel_configurator.html",
+        context={"request": request, "active": "excel"},
+    )
+
+
+@app.get("/api/excel/protocol/default")
+def excel_default_protocol():
+    return {"protocol": default_protocol_config()}
 
 
 @app.get("/ifc-qa/extractor", response_class=HTMLResponse)
@@ -6624,6 +6693,16 @@ def step2ifc_page(request: Request):
 @app.get("/tools", response_class=HTMLResponse)
 def marketing_tools_page(request: Request):
     return templates.TemplateResponse(request=request, name="public/tools.html", context={"request": request, "page": PUBLIC_PAGES["tools"]})
+
+
+@app.get("/features", response_class=HTMLResponse)
+def marketing_features_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/features.html", context={"request": request, "page": PUBLIC_PAGES["features"]})
+
+
+@app.get("/help", response_class=HTMLResponse)
+def marketing_help_page(request: Request):
+    return templates.TemplateResponse(request=request, name="public/help.html", context={"request": request, "page": PUBLIC_PAGES["help"]})
 
 
 @app.get("/resources", response_class=HTMLResponse)

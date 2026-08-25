@@ -1,0 +1,4 @@
+{% extends "public/base.html" %}{% import "public/macros.html" as ui %}{% block content %}
+{{ ui.hero(page, 'Browse Tools') }}
+<section class="public-section"><h2>Getting started</h2>{{ ui.cards([('Create an account','Use Create account, confirm your email if required by the Supabase project, then log in.'),('Open the application','The private /app area contains projects, Regulation 38 and links to the current IFC tools.'),('Password help','Use Forgot password on the login page. Always open the newest recovery email.'),('IFC sessions','Uploaded files continue to use the existing temporary session and download workflow.')]) }}</section>
+{% endblock %}

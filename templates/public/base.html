@@ -5,21 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ page.title }} | IFC Toolkit</title>
     <link rel="stylesheet" href="{{ asset_url('style.css') }}" />
+    <link rel="stylesheet" href="{{ asset_url('auth.css') }}" />
   </head>
   <body class="public-site">
+    {% set user = auth_user(request) %}
     <header class="public-header">
       <a class="public-brand" href="/" aria-label="IFC Toolkit home">
         <img src="/static/brand/ifctoolkit-logo-stacked.png" alt="ifctoolkit" />
         <span>Practical tools, better compliance.</span>
       </a>
       <nav class="public-nav" aria-label="Public navigation">
-        <a class="{% if page.active=='tools' %}active{% endif %}" href="/tools">Tools</a>
-        <a class="{% if page.active=='resources' %}active{% endif %}" href="/resources">Resources</a>
-        <a class="{% if page.active=='pricing' %}active{% endif %}" href="/pricing">Pricing</a>
-        <a class="{% if page.active=='compliance-security' %}active{% endif %}" href="/compliance-security">Compliance &amp; Security</a>
-        <a class="{% if page.active=='about' %}active{% endif %}" href="/about">About</a>
-        <a class="{% if page.active=='contact' %}active{% endif %}" href="/contact">Contact</a>
-        <a class="public-button small" href="/app">Launch Toolkit</a>
+        {% if user %}
+          <a href="/app/projects">Projects</a>
+          <a href="/app/regulation-38">Regulation 38</a>
+          <a class="{% if page.active=='tools' %}active{% endif %}" href="/tools">IFC Tools</a>
+          <a href="/account">Account</a>
+          <form action="/logout" method="post"><button class="public-nav-action" type="submit">Log out</button></form>
+        {% else %}
+          <a class="{% if page.active=='features' %}active{% endif %}" href="/features">Features</a>
+          <a class="{% if page.active=='tools' %}active{% endif %}" href="/tools">Tools</a>
+          <a class="{% if page.active=='help' %}active{% endif %}" href="/help">Help</a>
+          <a href="/login">Log in</a>
+          <a class="public-button small" href="/signup">Create account</a>
+        {% endif %}
       </nav>
     </header>
     <main class="public-main">

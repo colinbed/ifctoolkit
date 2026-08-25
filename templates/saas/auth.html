@@ -1,0 +1,39 @@
+{% extends "saas/layout.html" %}
+{% set titles = {"login":"Log in", "signup":"Create account", "forgot":"Forgot password", "reset":"Reset password"} %}
+{% block title %}{{ titles[mode] }} · IFC Toolkit{% endblock %}
+{% block content %}
+<section class="auth">
+  <form method="post">
+    <span class="eyebrow">Secure Supabase access</span>
+    <h1>{{ titles[mode] }}</h1>
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success" role="status">{{ message }}</p>{% endif %}
+    {% if mode == "login" %}
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label>Email<input type="email" name="email" required autocomplete="email"></label>
+      <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+      <button class="button" type="submit">Log in</button>
+      <div class="auth-links"><a href="/signup{% if next_url != '/app' %}?next={{ next_url|urlencode }}{% endif %}">Create account</a><a href="/forgot-password">Forgot password</a></div>
+    {% elif mode == "signup" %}
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label>Name<input name="name" required autocomplete="name"></label>
+      <label>Email<input type="email" name="email" required autocomplete="email"></label>
+      <label>Password<input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+      <label>Confirm password<input type="password" name="confirm_password" required minlength="8" autocomplete="new-password"></label>
+      <button class="button" type="submit">Create account</button>
+      <p><a href="/login{% if next_url != '/app' %}?next={{ next_url|urlencode }}{% endif %}">Back to log in</a></p>
+    {% elif mode == "forgot" %}
+      <p>Enter your email and Supabase will send a secure password reset link.</p>
+      <label>Email<input type="email" name="email" required autocomplete="email"></label>
+      <button class="button" type="submit">Send reset link</button>
+      <p><a href="/login">Back to log in</a></p>
+    {% elif mode == "reset" %}
+      {% if not can_reset %}<p>Open the latest reset link from your email. This page will activate after Supabase verifies the recovery session.</p>{% endif %}
+      <label>New password<input type="password" name="password" required minlength="8" autocomplete="new-password" {% if not can_reset %}disabled{% endif %}></label>
+      <label>Confirm password<input type="password" name="confirm_password" required minlength="8" autocomplete="new-password" {% if not can_reset %}disabled{% endif %}></label>
+      <button class="button" type="submit" {% if not can_reset %}disabled{% endif %}>Reset password</button>
+      {% if message %}<p><a href="/app">Continue to the application</a></p>{% endif %}
+    {% endif %}
+  </form>
+</section>
+{% endblock %}

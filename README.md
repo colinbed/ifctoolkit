@@ -1,170 +1,18 @@
----
-title: IFC Toolkit Hub
-emoji: 🛰️
-colorFrom: blue
-colorTo: purple
-sdk: docker
-app_port: 8000
-pinned: false
----
+# IFC Toolkit
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+**Practical tools, better compliance.**
 
-## IFC Toolkit Hub viewer
+IFC Toolkit is a FastAPI-based, SaaS-ready IFC validation product for `ifctoolkit.com`. It combines a public marketing site, private authenticated workspace, organisation-ready account model, and existing IFC/COBie processing utilities.
 
-The new **Viewer** page lets you load IFC session uploads directly in the browser with [IFC.js](https://ifcjs.github.io/info/) (powered by `web-ifc`). Processing stays client-side so models never leave your machine after the initial upload.
-
-### Supported inputs
-
-- `.ifc` and `.ifczip` session files (uploaded from the Uploads page)
-- Best results with models up to ~150–200 MB; much larger files may work but can be slow in the browser depending on GPU and memory.
-
-### Usage
-
-1. Upload an IFC on the **Uploads** page (the session ID is stored in `localStorage` under `ifc_session_id`).
-2. Open **Viewer** from the navigation bar and pick a session file.
-3. Use the toolbar to refresh files, load the selection, fit the model to view, toggle edges, and add/remove a section plane.
-4. Click elements in the scene to see their properties in the sidebar, and expand the spatial tree to browse layers.
-
-## Model Checking (Editable)
-
-The **Model Checking (Editable)** page adds a spreadsheet-driven validation UI that reads the DfE model checking workbook (sheet `09-IFC-SPF Model Checking Reqs`). Checks are grouped into logical sections (Project, Site/Building, Storeys, Spaces, Object Types, and Object Occurrences) and rendered as editable, virtualised tables.
-
-- Select an IFC from your session, choose an optional RIBA stage filter, and load sections to view current values.
-- Inline edits stay client-side until **Apply changes** writes them back to a copy of the IFC; the updated file is downloadable from the same session.
-- Required/enum validations surface directly in the table, with per-row and per-section issue counts.
-- Classification edits use proper `IfcClassification` / `IfcClassificationReference` / `IfcRelAssociatesClassification` relations and never remove unrelated assignments.
-- Generated classification values can be derived from expressions such as `{Pset_RoomCommon.RoomTag}-{Name}`; toggle the “Use generated” control per cell to apply them.
-
-### Mapping & expressions
-
-- Default mappings live in `config/check_field_mappings.json` (seeded for IfcProject Name/Description/Phase, IfcBuildingStorey heights, IfcSpace room tags and areas, and Uniclass/DfE ADS systems).
-- Expressions are stored in `config/check_expressions.json` and can be edited through **Admin / Mapping**.
-- Unmapped checks are listed on the Admin screen; assign a field type (attribute/property/quantity/classification/predefined type) and save to persist for future sessions.
-
-### Developer notes
-
-- Core helpers live in `check_definitions_loader.py`, `field_access.py`, `classification_writer.py`, `expression_engine.py`, and `validation.py`.
-- Tests cover classification write-back, expression token resolution, and property creation; run `pytest` to validate.
-
-## Presentation Layer Alignment
-
-The **Presentation Layer Alignment** page scans IFC uploads for overly-specific Uniclass Ss layer tokens, proposes a shallower target, and lets you apply approved mappings to a new IFC copy.
-
-### Usage
-
-1. Upload an IFC on the **Upload & Session** page.
-2. Open **Presentation Layer Alignment** from the navigation bar.
-3. Paste an Allowed Layers “One Of [ ... ]” list or import a `.txt`/`.csv` file (the tool also seeds a built-in allowed list specific to IFC Tools validation targets).
-4. Edit explicit overrides, toggle auto-shallowing, and (optionally) enable updating both presentation layers and `Layer` properties.
-5. Scan, filter the results, and apply the approved rows to download the updated IFC plus JSON/CSV change logs.
-
-## Proxy → Types enhancements
-
-The **Proxy → Types** page now includes a **PredefinedType Fixer** panel that can run against any selected IfcClasses:
-
-- Uses the existing type-name matching logic to set `PredefinedType` to `NOTDEFINED` when a match is found or `USERDEFINED` otherwise.
-- Skips entities without a `PredefinedType` attribute (reported as N/A).
-- Supports dry-run mode to review proposed changes before exporting a new IFC plus change logs.
-
-
-## COBie QC tool (integrated)
-
-COBie QC is now a built-in IFC Toolkit page available at **/tools/cobieqc** (no Gradio runtime).
-
-### Runtime requirements
-
-- Java runtime is required because the backend executes `CobieQcReporter.jar`.
-- Railway/web runtimes must bind to `0.0.0.0:$PORT` (with local fallback `8000`).
-- A lightweight health endpoint is available at `GET /health` for platform healthchecks.
-- Railway production deployments should mount a persistent volume at `/data`.
-- On startup, COBieQC assets are bootstrapped with folder-first precedence:
-  - `/data/cobieqc/CobieQcReporter.jar`
-  - `/data/cobieqc/xsl_xml/`
-- The repository does not include COBieQC runtime assets. Bootstrap uses:
-  - `COBIEQC_JAR_SOURCE_URL` (default: Google Drive JAR share link)
-  - `COBIEQC_XML_SOURCE_URL` (folder reference; default: Google Drive folder link)
-  - `COBIEQC_FORCE_JAR_REFRESH=true` to always replace the persisted JAR during startup.
-  - If `COBIEQC_XML_FILE_URLS_JSON` is set, `COBIEQC_XML_SOURCE_URL` is ignored.
-- `COBIEQC_XML_ZIP_SOURCE_URL` is deprecated and ignored for XML/XSL resources.
-- XML/XSL bootstrap no longer downloads/extracts ZIP archives; it validates a local resource folder and optionally performs folder sync only via folder-source handling.
-- For Railway, the most reliable setup is to mount/copy the unzipped `xsl_xml` folder directly at `COBIEQC_RESOURCE_DIR`.
-- Runtime path env vars (recommended on Railway):
-  - `COBIEQC_DATA_DIR=/data/cobieqc`
-  - `COBIEQC_JAR_PATH=/data/cobieqc/CobieQcReporter.jar`
-  - `COBIEQC_RESOURCE_DIR=/data/cobieqc/xsl_xml`
-- JVM memory guardrail env vars (recommended defaults for ~1GB containers):
-  - `COBIEQC_JAVA_XMS=128m`
-  - `COBIEQC_JAVA_XMX=512m`
-  - These are applied only to the COBieQC subprocess invocation (`java -Xms... -Xmx... -XX:+UseContainerSupport -jar ...`).
-  - `Xms` must be less than or equal to `Xmx`; invalid values fail fast with an explicit runtime error.
-- COBieQC Java runs are serialized with a process lock so only one JVM executes at a time per app container.
-- Hugging Face Docker Spaces install Java from `packages.txt` (`openjdk-21-jre-headless`).
-- The repo `Dockerfile` (used for local/containerized runs) also installs `openjdk-21-jre-headless`.
-- Reports are generated into per-job data directories (`$IFC_APP_DATA_DIR/jobs/cobieqc/<job_id>/`) instead of `COBieQC/reports/`.
-
-### API endpoints
-
-- `POST /api/tools/cobieqc/run` — multipart upload (`file=.xlsx`, `stage=D|C`) and returns a queued `job_id`.
-- `GET /api/tools/cobieqc/jobs/{job_id}` — job status, progress, and log tail.
-- `GET /api/tools/cobieqc/jobs/{job_id}/result` — result metadata and preview HTML.
-- `GET /api/tools/cobieqc/jobs/{job_id}/download` — download generated report HTML.
-- `GET /api/tools/cobieqc/health` — Java/runtime diagnostic.
-
-## IFC File Size Reducer
-
-The **IFC File Size Reducer** tool is available at **/tools/reduce-file-size** and only uses existing session files (no direct upload in-tool).
-
-### Modes
-
-- **Compress Only**: “Creates a smaller packaged copy without changing model content.”
-- **Conservative Viewer Copy**: “Applies limited reductions suitable for coordination / viewing copies.”
-- **Aggressive Viewer Copy**: “Removes more metadata and may affect downstream use. For read-only copies only.”
-- **Split by Storey**: “Reduces scope by creating separate files per storey.”
-
-### Endpoints
-
-- `POST /api/ifc-tools/reduce-file-size/analyse`
-- `POST /api/ifc-tools/reduce-file-size/run`
-
-### Limitations and warnings
-
-- `Optimise` is treated as expert-only and disabled by default; it is lossy and documented as very slow.
-- `PurgeData` is destructive and intended for stripped-down viewer copies.
-- IFCZIP is usually the safest first option when the goal is transfer/storage reduction only.
-- Split-by-storey depends on available IfcPatch recipe support in the runtime.
-
-## Running locally
+## Run locally
 
 ```bash
+cp .env.example .env
 uvicorn app:app --reload
 ```
 
-## IFC extractor async jobs
+Open `http://localhost:8000`. Existing prototype utilities remain available from `/legacy/upload` while they are progressively integrated into the authenticated workspace.
 
-The IFC Data Extractor now uses database-backed queued jobs to keep heavy extraction off the web request path.
+Uploaded files are processed in temporary session storage and are intended to be automatically deleted after validation. IFC Toolkit does not use uploaded files to train AI models. Production deployments must set a strong `AUTH_SECRET`, use HTTPS, configure UK-region storage, and run a scheduled retention worker.
 
-### New endpoints
-
-- `POST /api/ifc/jobs`
-- `GET /api/ifc/jobs/{id}`
-- `GET /api/ifc/jobs/{id}/result`
-- `POST /api/ifc/jobs/{id}/cancel`
-
-Backwards-compatible endpoint retained:
-
-- `POST /api/session/{session_id}/data-extractor/start` (returns `jobId` and deprecation note)
-
-### Environment variables
-
-- `DATABASE_URL` (required for queue)
-- `IFC_MAX_TOTAL_BYTES` (default `500000000`)
-- `IFC_MAX_FILES_PER_JOB` (default `5`)
-- `IFC_JOB_TIMEOUT_SECONDS` (default `1200`)
-- `IFC_WORKER_CONCURRENCY` (default `1`)
-- `IFC_OUTPUT_BUCKET` (default `ifc-outputs`)
-
-### Railway process commands
-
-- Web: `uvicorn app:app --host 0.0.0.0 --port $PORT`
-- Worker: `python -m backend.ifc_worker`
+See [`docs/saas-mvp.md`](docs/saas-mvp.md) for deployment configuration, migration steps, and follow-up work.

@@ -905,6 +905,238 @@ button.ghost {
   grid-template-columns: repeat(2, minmax(280px, 1fr));
   gap: 24px;
 }
+.excel-active-config {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+.excel-active-config > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.excel-active-config-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.excel-active-config strong,
+.excel-active-config span {
+  overflow-wrap: anywhere;
+}
+.excel-active-config-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+.excel-active-config-actions .badge {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+.excel-configurator {
+  margin-bottom: 24px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+.compact-title {
+  margin-bottom: 12px;
+}
+.compact-title h3 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.compact-title p {
+  margin: 0;
+}
+.excel-config-start,
+.excel-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.excel-config-start {
+  margin-bottom: 16px;
+}
+.excel-model-inspector {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.6fr) minmax(320px, 1fr);
+  align-items: end;
+  gap: 18px;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.excel-model-inspector label {
+  margin-bottom: 4px;
+}
+.excel-model-inspector p {
+  margin: 0;
+}
+.excel-config-grid,
+.excel-builder-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr) minmax(260px, 0.8fr);
+  gap: 16px;
+}
+.excel-config-meta,
+.excel-config-summary,
+.excel-entity-panel,
+.excel-field-panel,
+.excel-discovery {
+  min-width: 0;
+}
+.excel-config-meta textarea {
+  resize: vertical;
+}
+.excel-config-facts {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.excel-config-facts strong {
+  display: block;
+  color: var(--deep-navy);
+  font-size: 13px;
+}
+.excel-config-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.excel-config-summary span {
+  color: var(--muted);
+}
+.excel-builder-grid {
+  grid-template-columns: minmax(220px, 0.35fr) minmax(0, 1fr);
+  margin-top: 18px;
+}
+.excel-entity-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.excel-entity-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.excel-entity-row button {
+  min-height: 32px;
+  padding: 6px 10px;
+}
+.excel-entity-row strong,
+.excel-field-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.excel-entity-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.excel-field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.excel-field-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.excel-field-table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+}
+.excel-field-table th,
+.excel-field-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6edf7;
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
+}
+.excel-field-table th {
+  background: #edf5ff;
+  color: var(--deep-navy);
+  font-weight: 800;
+}
+.excel-field-table td {
+  color: var(--text);
+}
+.excel-field-table tr:last-child td {
+  border-bottom: 0;
+}
+.excel-field-builder {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+}
+.excel-field-builder label {
+  margin-bottom: 0;
+}
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+.excel-discovery {
+  margin-top: 18px;
+}
+.excel-detected-properties {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.excel-detected-group {
+  padding: 10px;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.excel-detected-group strong {
+  display: block;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+.excel-detected-group label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 5px 0;
+  color: var(--text);
+  font-weight: 600;
+}
 .excel-inline-controls {
   align-items: center;
 }
@@ -929,6 +1161,16 @@ button.ghost {
 }
 @media (max-width: 900px) {
   .excel-layout {
+    grid-template-columns: 1fr;
+  }
+  .excel-active-config {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .excel-model-inspector,
+  .excel-config-grid,
+  .excel-builder-grid,
+  .excel-field-builder {
     grid-template-columns: 1fr;
   }
   .excel-bottom-actions {
@@ -1832,7 +2074,7 @@ body.public-site {
 .public-brand { display:flex; align-items:center; gap:14px; text-decoration:none; font-weight:800; color:var(--public-deep); }
 .public-brand img { width: 132px; height: auto; display:block; }
 .public-brand span { font-size: 13px; color:#53627A; font-weight:700; }
-.public-nav { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.public-nav { display:flex; flex-direction:row; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .public-nav a { text-decoration:none; padding:10px 12px; border-radius:999px; color:#33415C; font-weight:700; font-size:14px; }
 .public-nav a.active, .public-nav a:hover { background:var(--public-off-white); color:var(--public-blue); }
 .public-button { display:inline-flex; align-items:center; justify-content:center; gap:8px; border-radius:999px; padding:13px 20px; background:var(--public-blue); color:white!important; text-decoration:none; font-weight:800; border:1px solid var(--public-blue); box-shadow:0 12px 30px rgba(30,111,255,.22); }

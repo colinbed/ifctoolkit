@@ -1,0 +1,39 @@
+{% set user = user if user is defined else auth_user(request) %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{% block title %}IFC Toolkit{% endblock %}</title>
+    <link rel="stylesheet" href="/static/saas.css">
+    <link rel="stylesheet" href="/static/auth.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="IFC Toolkit home">
+        <span class="layers"><i></i><i></i><i></i></span><b>ifc<span>toolkit</span></b>
+      </a>
+      <nav aria-label="Primary navigation">
+        {% if user %}
+          <a href="/app/projects">Projects</a>
+          <a href="/app/regulation-38">Regulation 38</a>
+          <a href="/app/tools">IFC Tools</a>
+          <a href="/account">Account</a>
+          <form action="/logout" method="post"><button class="link" type="submit">Log out</button></form>
+        {% else %}
+          <a href="/features">Features</a>
+          <a href="/tools">Tools</a>
+          <a href="/help">Help</a>
+          <a href="/login">Log in</a>
+          <a class="button small" href="/signup">Create account</a>
+        {% endif %}
+      </nav>
+    </header>
+    <main>{% block content %}{% endblock %}</main>
+    <footer>
+      <div class="brand"><b>ifc<span>toolkit</span></b></div>
+      <p>Practical tools, better compliance.</p>
+      <p>Designed for UK-hosted deployment · ifctoolkit.com</p>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{% extends "saas/layout.html" %}
+{% block title %}Regulation 38 · IFC Toolkit{% endblock %}
+{% block content %}
+<section class="app-shell regulation-workspace">
+  <span class="eyebrow">Core authenticated area{% if project_id %} · Project {{ project_id }}{% endif %}</span>
+  <h1>Regulation 38</h1>
+  <p>Organise fire-safety information for handover to the responsible person in a clear, reviewable workspace.</p>
+  <p class="notice"><strong>Important:</strong> This workspace supports information collation and completeness review. It does not automatically demonstrate legal or regulatory compliance.</p>
+  <ol class="section-list">
+    {% for section in sections %}<li><span>{{ loop.index }}</span><strong>{{ section }}</strong><em>Not started</em></li>{% endfor %}
+  </ol>
+</section>
+{% endblock %}

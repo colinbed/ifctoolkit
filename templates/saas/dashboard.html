@@ -1,0 +1,15 @@
+{% extends "saas/layout.html" %}
+{% block title %}Application · IFC Toolkit{% endblock %}
+{% block content %}
+<section class="app-shell">
+  <span class="eyebrow">Authenticated workspace</span>
+  <h1>Welcome{% if user_display_name(user) %}, {{ user_display_name(user) }}{% endif %}</h1>
+  <p>Manage project workspaces, prepare Regulation 38 information and open the existing IFC processing tools.</p>
+  <div class="dashboard-cards">
+    <a href="/app/projects"><strong>Projects</strong><span>Create and open project workspaces.</span></a>
+    <a href="/app/regulation-38"><strong>Regulation 38</strong><span>Prepare structured fire-safety handover information.</span></a>
+    <a href="/app/tools"><strong>IFC Tools</strong><span>Open the existing IFC, COBie and data QA tools.</span></a>
+    <article><strong>Recent Activity</strong><span>No recent authenticated activity yet.</span></article>
+  </div>
+</section>
+{% endblock %}
