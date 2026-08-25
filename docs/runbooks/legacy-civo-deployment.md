@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Deprecated legacy infrastructure.** Railway is the primary deployment platform. Nothing in this runbook or `docs/legacy-kubernetes/` is used by the production build, CI, or application startup. Retained only for incident history and controlled retirement of the former Civo environment.
+
 # Civo deployment runbook
 
 ## Security blocker before deployment
@@ -12,7 +15,7 @@ Before deploying any image from this repository:
 4. Rebuild images after rotation.
 5. Consider Git history purging with repository-owner coordination. Do not force-push shared history without approval.
 
-The workflow now stops before deployment if `secrets.KUBE_CONFIG` is not configured.
+The former workflow required `secrets.KUBE_CONFIG`; the current CI workflow has no cluster access and performs no deployment.
 
 ## Authentication secret prerequisite
 
