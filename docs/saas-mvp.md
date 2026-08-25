@@ -1,19 +1,18 @@
 # IFC Toolkit SaaS MVP
 
-The existing FastAPI validation toolkit now exposes a public marketing surface and a private, session-backed application shell. The MVP account store defaults to SQLite (`SAAS_DB_PATH`) and prepares users, organisations, memberships, validation jobs, reports, and audit logs. Production deployments should migrate these entities to the service configured by `DATABASE_URL`.
+The existing FastAPI validation toolkit exposes a public marketing surface and a private, Supabase-authenticated application shell. Supabase Auth owns account credentials and sessions. The application stores only the user's signed, HttpOnly Supabase session cookie and uses the publishable key; it does not use a service-role key.
 
 Uploads remain in temporary session storage and are removed by session expiry or explicit deletion. Original uploads must be deleted after validation; only report metadata and configured report outputs should persist.
 
 ## Production configuration
 
-Set `AUTH_SECRET`, `APP_URL`, `DATABASE_URL`, `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ENDPOINT`, `FILE_RETENTION_MINUTES`, and `MAX_UPLOAD_SIZE_MB`. `STRIPE_SECRET_KEY` and `EMAIL_PROVIDER_KEY` are placeholders until those integrations are enabled.
+Set `AUTH_SECRET`, `APP_URL`, `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` for authentication. Optional processing/storage settings include `DATABASE_URL`, `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ENDPOINT`, `FILE_RETENTION_MINUTES`, and `MAX_UPLOAD_SIZE_MB`. Locally, values can be placed in repository-root `.env.local`; deployment-provided values take precedence.
 
 Deployment targets are Civo UK Sovereign Cloud for MVP and Azure UK South for enterprise-ready deployments. Do not claim certification unless independently confirmed; approved language is “designed to support Cyber Essentials requirements” and “aligned with ISO 27001 principles.”
 
 ## Migration and follow-up
 
-1. Replace SQLite with managed PostgreSQL migrations.
-2. Connect validation workers to validation jobs and audit events.
+1. Connect the existing project model to authenticated Supabase user IDs and RLS policies.
+2. Connect validation workers to project activity and audit events.
 3. Add a scheduled retention worker and temporary object-storage adapter.
-4. Connect email verification/password reset, then add CSRF tokens to privileged forms.
-5. Prepare optional SSO, MFA, custom retention, and subscription billing.
+4. Prepare optional SSO, MFA, custom retention, and subscription billing.

@@ -7,12 +7,12 @@ IFC Toolkit is a FastAPI-based, SaaS-ready IFC validation product for `ifctoolki
 ## Run locally
 
 ```bash
-cp .env.example .env
+cp .env.example .env.local
 uvicorn app:app --reload
 ```
 
 Open `http://localhost:8000`. Existing prototype utilities remain available from `/legacy/upload` while they are progressively integrated into the authenticated workspace.
 
-Uploaded files are processed in temporary session storage and are intended to be automatically deleted after validation. IFC Toolkit does not use uploaded files to train AI models. Production deployments must set a strong `AUTH_SECRET`, use HTTPS, configure UK-region storage, and run a scheduled retention worker.
+Supabase Auth requires `AUTH_SECRET`, `APP_URL`, `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY`. Deployment environment variables take precedence over repository-root `.env.local`; no Supabase service-role key is used. Uploaded files are processed in temporary session storage and are intended to be automatically deleted after validation. IFC Toolkit does not use uploaded files to train AI models.
 
 See [`docs/saas-mvp.md`](docs/saas-mvp.md) for deployment configuration, migration steps, and follow-up work.

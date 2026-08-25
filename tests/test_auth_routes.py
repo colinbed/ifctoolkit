@@ -1,4 +1,5 @@
 import asyncio
+import os
 from dataclasses import dataclass
 from urllib.parse import urlencode, urlsplit
 
@@ -86,6 +87,21 @@ def test_private_routes_redirect_anonymous_users_to_login():
         assert response.header("location") == f"/login?next={path}"
 
 
+def test_env_local_does_not_override_deployment_environment(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "APP_URL=http://from-file.example\nSUPABASE_URL=https://local-ref.supabase.co\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APP_URL", "https://deployment.example")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+
+    supabase_auth.load_env_local(env_file)
+
+    assert os.environ["APP_URL"] == "https://deployment.example"
+    assert os.environ["SUPABASE_URL"] == "https://local-ref.supabase.co"
+
+
 class FakeSupabaseAuth:
     user = {
         "id": "00000000-0000-4000-8000-000000000001",
@@ -109,6 +125,11 @@ class FakeSupabaseAuth:
 
     def sign_out(self, access_token: str):
         assert access_token == "mock-access-token"
+
+    def get_profile(self, access_token: str, user_id: str):
+        assert access_token == "mock-access-token"
+        assert user_id == self.user["id"]
+        return {"id": user_id, "full_name": "Test Member"}
 
 
 def test_mocked_supabase_login_private_navigation_and_logout(monkeypatch):
@@ -142,6 +163,16 @@ def test_mocked_supabase_login_private_navigation_and_logout(monkeypatch):
     assert ">Log out<" in private_app.text
     assert "Create account" not in private_app.text
 
+    account = request("GET", "/account", headers={"cookie": session_cookie})
+    assert account.status_code == 200
+    assert 'value="Test Member"' in account.text
+    assert 'value="member@example.com"' in account.text
+
+    regulation_38 = request("GET", "/app/regulation-38", headers={"cookie": session_cookie})
+    assert regulation_38.status_code == 200
+    assert "Fire Safety Information" in regulation_38.text
+    assert "does not automatically demonstrate legal or regulatory compliance" in regulation_38.text
+
     logout = request("POST", "/logout", headers={"cookie": session_cookie})
     assert logout.status_code == 303
     assert logout.header("location") == "/"
@@ -151,4 +182,3 @@ def test_mocked_supabase_login_private_navigation_and_logout(monkeypatch):
     after_logout = request("GET", "/app", headers={"cookie": cleared_cookie})
     assert after_logout.status_code == 303
     assert after_logout.header("location") == "/login?next=/app"
-
