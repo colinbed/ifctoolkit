@@ -1,5 +1,7 @@
 # Production-readiness remediation notes
 
+> Historical remediation record. Railway is now the active production target; Civo/Kubernetes and GHCR statements below describe the superseded architecture. See `docs/railway-deployment.md` for current operations.
+
 ## Findings-to-fix matrix
 
 | Area | Finding | Status in this change | Remaining action |

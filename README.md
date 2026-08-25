@@ -22,7 +22,7 @@ uvicorn app:app --reload
 
 Open `http://localhost:8000`. Public marketing and existing IFC tools remain available alongside the private `/app` workspace. Authentication is provided only by Supabase Auth; the former local SQLite/password implementation is not part of the runtime.
 
-Local `.env` files are intentionally ignored and must not be committed. Configure environment variables in your shell, local process manager, or deployment platform instead. Production Kubernetes deployments should continue to source runtime configuration from Secrets and ConfigMaps with `secretKeyRef` and `configMapKeyRef` entries rather than committing credentials or writing them directly into manifests.
+Local `.env` files are intentionally ignored and must not be committed. Configure environment variables in your shell, local process manager, or deployment platform instead. Production Railway deployments must supply runtime configuration through Railway Variables rather than committed files.
 
 ### Configuration reference
 
@@ -39,14 +39,26 @@ Local `.env` files are intentionally ignored and must not be committed. Configur
 | `SUPABASE_AUTH_TIMEOUT_SECONDS` | Authentication | Optional outbound Supabase request timeout. | `10` |
 | `STRIPE_SECRET_KEY` | Billing integrations | Stripe secret API key, if billing is enabled. Keep it in a secret manager. | `<stripe-secret-key-from-provider>` |
 | `EMAIL_PROVIDER_KEY` | Transactional email | Provider API key for outbound email, if enabled. Keep it in a secret manager. | `<email-provider-secret-key>` |
-| `FILE_RETENTION_MINUTES` | Upload/session retention | Number of minutes to retain temporary uploaded files before cleanup. | `30` |
+| `APP_TEMP_ROOT` | Temporary processing | Ephemeral session/job root. | `/tmp/ifctoolkit` |
+| `FILE_RETENTION_MINUTES` | Upload/session retention | Number of minutes to retain temporary uploaded files before cleanup (5–1440). | `30` |
+| `MIN_READY_TEMP_FREE_BYTES` | Readiness | Minimum free temporary disk bytes required for `/health/ready`. | `536870912` |
 | `MAX_UPLOAD_SIZE_MB` | Upload limits | Maximum upload size in MiB for application-level validation. | `1200` |
 
 For Supabase Auth, set the project Site URL to the production `APP_URL` and allow `<APP_URL>/auth/callback` as a redirect URL for email confirmation and password recovery. If a `public.profiles` table is enabled for optional profile data, it must use row-level security policies that restrict each user to their own row. The application never requires or accepts a Supabase service-role key.
 
-The Kubernetes manifest reads `AUTH_SECRET`, `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` from an out-of-band Secret named `ifctoolkit-auth`. Do not commit a Secret manifest or literal values.
+### Deploy to Railway
 
-Uploaded files are processed in temporary session storage and are automatically considered for deletion at startup and during session/job cleanup. IFC Toolkit does not use uploaded files to train AI models. Production deployments must use HTTPS, configure UK-region storage, and add an external scheduled cleanup if retention must be enforced even while the service receives no traffic.
+1. Create a Railway project and choose **Deploy from GitHub repo**, selecting this repository and the `main` branch.
+2. Railway uses the repository `Dockerfile`; no GHCR image or GitHub deployment workflow is required.
+3. Add `AUTH_SECRET`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `APP_URL` as Railway Variables. Add the upload/retention variables from the table as appropriate. Do not commit their values.
+4. Generate a Railway domain, then set `APP_URL` to its HTTPS origin (without a trailing slash) and redeploy.
+5. In Supabase Auth URL Configuration, set the Site URL to `APP_URL` and add `<APP_URL>/auth/callback` to Redirect URLs. Repeat this for a later custom domain before switching `APP_URL`.
+6. Verify `/health/live`, `/health/ready`, `/health/build-info`, the public site, and an authentication round trip. A Railway health check is configured against `/health/live`; readiness additionally validates auth variables and temporary disk capacity.
+7. Add and verify a custom domain later if required, then update both Railway `APP_URL` and Supabase URL Configuration.
+
+Railway is the primary production deployment platform. Merging to `main` runs CI and Railway's GitHub integration performs the deployment. GitHub Actions does not publish GHCR images or access infrastructure credentials. See [`docs/railway-deployment.md`](docs/railway-deployment.md) for the full operations guide and variable inventory.
+
+Uploaded files are processed on Railway ephemeral disk under `APP_TEMP_ROOT` (default `/tmp/ifctoolkit`) and are automatically considered for deletion at startup and during session/job cleanup. IFC Toolkit does not use uploaded files to train AI models. Production deployments must use HTTPS, configure UK-region storage, and add an external scheduled cleanup if retention must be enforced even while the service receives no traffic.
 
 See [`docs/saas-mvp.md`](docs/saas-mvp.md) for deployment configuration, migration steps, and follow-up work.
 

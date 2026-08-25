@@ -39,3 +39,12 @@ __pycache__/
 *.keystore
 secrets/
 *.secret
+
+# Local virtual environments and generated archives
+.venv/
+venv/
+*.zip
+
+# Local comparison/scratch outputs
+comparison/
+comparisons/
