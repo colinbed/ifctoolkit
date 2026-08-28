@@ -14,13 +14,13 @@ Set these values through the process environment or deployment secret manager:
 - `SUPABASE_PUBLISHABLE_KEY`: publishable client key, never a service-role key;
 - `SUPABASE_AUTH_TIMEOUT_SECONDS`: optional request timeout, default `10`.
 
-In Supabase Auth URL Configuration, set the Site URL to `APP_URL` and allow `<APP_URL>/auth/callback`. Email confirmation and password-recovery links return to that callback. If `public.profiles` is exposed through the Data API, enable row-level security and ownership policies so authenticated users can select and update only their own row.
+In Supabase Auth URL Configuration, set the Site URL to `APP_URL`, allow `<APP_URL>/auth/callback` for email confirmation, and allow `<APP_URL>/reset-password` for password recovery. If `public.profiles` is exposed through the Data API, enable row-level security and ownership policies so authenticated users can select and update only their own row.
 
 Local `.env.local` loading is supported for development and never overwrites values already supplied by the process. `.env*` files are ignored, excluded from the container build context, and rejected by the tracked-secret filename check; do not add a tracked environment example file.
 
 ## Railway deployment
 
-Railway builds the repository Dockerfile and injects `AUTH_SECRET`, `APP_URL`, `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` through Railway Variables. Its generated `PORT` is consumed by the container command. Configure the Supabase Site URL and `/auth/callback` redirect for the Railway HTTPS domain. Kubernetes Secrets are not part of the active deployment path.
+Railway builds the repository Dockerfile and injects `AUTH_SECRET`, `APP_URL`, `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` through Railway Variables. Its generated `PORT` is consumed by the container command. Configure the Supabase Site URL, `/auth/callback`, and `/reset-password` redirects for the Railway HTTPS domain. Kubernetes Secrets are not part of the active deployment path.
 
 Uploads remain in temporary session storage and are removed by the configured retention cleanup or explicit deletion. Original uploads must not be persisted as account records. Keep the deployment at one replica until uploaded files and in-memory job state are moved to external storage.
 

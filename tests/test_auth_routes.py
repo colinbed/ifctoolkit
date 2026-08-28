@@ -1,7 +1,8 @@
 import asyncio
+import json
 import os
 from dataclasses import dataclass
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import app as app_module
 import ifc_app.saas as saas
@@ -111,6 +112,101 @@ def test_env_local_does_not_override_deployment_environment(monkeypatch, tmp_pat
 
     assert os.environ["APP_URL"] == "https://deployment.example"
     assert os.environ["SUPABASE_URL"] == "https://local-ref.supabase.co"
+
+
+def test_password_reset_uses_app_url_reset_page(monkeypatch):
+    settings = supabase_auth.AuthSettings(
+        app_url="https://ifctoolkit.co.uk",
+        supabase_url="https://project-ref.supabase.co",
+        publishable_key="publishable-key",
+    )
+    service = supabase_auth.SupabaseAuthService(settings)
+    captured = {}
+
+    def fake_request_json(method, url, **kwargs):
+        captured.update(method=method, url=url, **kwargs)
+        return {}
+
+    monkeypatch.setattr(service, "_request_json", fake_request_json)
+
+    service.send_password_reset("member@example.com")
+
+    request_url = urlsplit(captured["url"])
+    assert captured["method"] == "POST"
+    assert request_url.path == "/auth/v1/recover"
+    assert parse_qs(request_url.query)["redirect_to"] == ["https://ifctoolkit.co.uk/reset-password"]
+    assert captured["json"] == {"email": "member@example.com"}
+
+
+class RecoverySupabaseAuth:
+    user = {"id": "recovery-user", "email": "member@example.com", "user_metadata": {}}
+
+    def validate_session(self, session):
+        if session.get("access_token") != "valid-access" or session.get("refresh_token") != "valid-refresh":
+            raise supabase_auth.SupabaseAuthError("Session expired.", status_code=401)
+        return self.user, dict(session)
+
+
+def test_recovery_session_handoff_enables_reset_form(monkeypatch):
+    fake = RecoverySupabaseAuth()
+    monkeypatch.setattr(saas, "get_auth_service", lambda: fake)
+    monkeypatch.setattr(supabase_auth, "get_auth_service", lambda: fake)
+    payload = {
+        "access_token": "valid-access",
+        "refresh_token": "valid-refresh",
+        "token_type": "bearer",
+        "expires_in": "3600",
+        "expires_at": "1800000000",
+        "type": "recovery",
+    }
+
+    handoff = request(
+        "POST",
+        "/auth/session",
+        body=json.dumps(payload).encode(),
+        headers={"content-type": "application/json"},
+    )
+
+    assert handoff.status_code == 200
+    assert handoff.text == '{"redirect":"/reset-password"}'
+    session_cookie = handoff.header("set-cookie").split(";", 1)[0]
+    reset_page = request("GET", "/reset-password", headers={"cookie": session_cookie})
+    assert reset_page.status_code == 200
+    assert 'name="password" required minlength="8" autocomplete="new-password" disabled' not in reset_page.text
+    assert '<button class="button" type="submit" disabled>' not in reset_page.text
+
+
+def test_invalid_recovery_session_fails_without_cookie(monkeypatch):
+    fake = RecoverySupabaseAuth()
+    monkeypatch.setattr(saas, "get_auth_service", lambda: fake)
+    payload = {"access_token": "expired", "refresh_token": "expired", "type": "recovery"}
+
+    handoff = request(
+        "POST",
+        "/auth/session",
+        body=json.dumps(payload).encode(),
+        headers={"content-type": "application/json"},
+    )
+
+    assert handoff.status_code == 401
+    assert not handoff.header("set-cookie")
+
+
+def test_reset_page_hands_off_recovery_hash_and_removes_tokens_from_url():
+    reset_page = request("GET", "/reset-password")
+
+    assert 'hash.get("access_token")' in reset_page.text
+    assert 'hash.get("refresh_token")' in reset_page.text
+    assert 'hash.get("type") !== "recovery"' in reset_page.text
+    assert 'fetch("/auth/session"' in reset_page.text
+    assert 'history.replaceState(null, "", "/reset-password")' in reset_page.text
+    assert reset_page.text.index('history.replaceState(null, "", "/reset-password")') < reset_page.text.index(
+        'fetch("/auth/session"'
+    )
+    assert 'window.location.replace("/reset-password")' in reset_page.text
+    assert "Your password reset link is invalid or has expired. Request a new password reset link." in reset_page.text
+    assert "Open the latest reset link from your email." in reset_page.text
+    assert '<button class="button" type="submit" disabled>' in reset_page.text
 
 
 class FakeSupabaseAuth:
