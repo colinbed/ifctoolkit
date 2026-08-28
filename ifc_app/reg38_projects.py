@@ -35,6 +35,7 @@ class ProjectCreate:
     principal_contractor: str | None = None
     principal_designer: str | None = None
     description: str | None = None
+    building_name: str | None = None
     building_type: str | None = None
     project_status: str = "DRAFT"
     planned_handover_date: date | str | None = None
@@ -67,6 +68,7 @@ class ProjectSummary:
     project_reference: str | None
     project_status: str
     role: str
+    building_name: str | None = None
     building_type: str | None = None
     planned_handover_date: str | None = None
 
@@ -88,7 +90,7 @@ class Regulation38Repository:
 
     def _data_request(self, method: str, path: str, access_token: str, **kwargs: Any) -> Any:
         return self.auth._request_json(method, f"{self.auth.settings.project_url}/rest/v1/{path}", access_token=access_token,
-            public_error="The Regulation 38 project service is temporarily unavailable.", **kwargs)
+            public_error="Projects could not be loaded.", **kwargs)
 
     def can_create_project(self, token: str) -> bool:
         return self._data_request("POST", "rpc/can_create_project", token, json={}) is True
@@ -100,14 +102,14 @@ class Regulation38Repository:
         return result
 
     def list_projects(self, token: str) -> list[ProjectSummary]:
-        select = "role,projects(id,name,project_reference,project_status,building_type,planned_handover_date)"
+        select = "role,projects(id,name,building_name,project_reference,project_status,building_type,planned_handover_date)"
         rows = self._data_request("GET", f"project_members?select={select}&order=created_at.desc", token)
         output = []
         for row in rows if isinstance(rows, list) else []:
             project = row.get("projects") if isinstance(row, Mapping) else None
             if isinstance(project, Mapping):
                 output.append(ProjectSummary(str(project["id"]), str(project["name"]), project.get("project_reference"),
-                    str(project["project_status"]), str(row["role"]), project.get("building_type"), project.get("planned_handover_date")))
+                    str(project["project_status"]), str(row["role"]), project.get("building_name"), project.get("building_type"), project.get("planned_handover_date")))
         return output
 
     def get_project(self, token: str, project_id: str) -> dict[str, Any] | None:
@@ -118,15 +120,18 @@ class Regulation38Repository:
         self._data_request("PATCH", f"projects?id=eq.{quote(project_id)}", token, json=dict(values))
 
     def get_sections(self, token: str, project_id: str) -> list[dict[str, Any]]:
-        rows = self._data_request("GET", f"reg38_sections?project_id=eq.{quote(project_id)}&select=id,section_key,name,enabled,sort_order&order=sort_order", token)
+        rows = self._data_request("GET", f"reg38_sections?project_id=eq.{quote(project_id)}&select=id,section_key,name,enabled,applicability_status,sort_order&order=sort_order", token)
         return [dict(row) for row in rows] if isinstance(rows, list) else []
 
-    def save_scope(self, token: str, project_id: str, scope_type: str, scope_detail: str, enabled: set[str]) -> None:
-        self.update_project(token, project_id, {"reg38_scope_type": scope_type, "reg38_scope_detail": scope_detail})
+    def save_scope(self, token: str, project_id: str, scope_type: str, scope_description: str,
+                   building_reference: str, area_description: str, applicability: Mapping[str, str]) -> None:
+        self._data_request("POST", "rpc/save_reg38_scope", token, json={"target_project_id": project_id,
+            "scope_data": {"scope_type": scope_type, "scope_description": scope_description,
+                           "building_reference": building_reference, "area_description": area_description}})
         sections = self.get_sections(token, project_id)
         for section in sections:
             self._data_request("PATCH", f"reg38_sections?id=eq.{quote(str(section['id']))}", token,
-                json={"enabled": section["section_key"] in enabled})
+                json={"applicability_status": applicability.get(section["section_key"], "TO_BE_CONFIRMED"), "enabled": True})
 
     def list_ifc_files(self, token: str, project_id: str) -> list[dict[str, Any]]:
         query = "select=id,original_filename,file_size,status,storage_path,ifc_processing_jobs(id,status,progress_percent)&order=created_at.desc"
