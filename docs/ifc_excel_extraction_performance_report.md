@@ -1,68 +1,33 @@
-# IFC → Excel Extraction Investigation Report
+# IFC → Excel extraction performance report
 
-## Current extraction pipeline summary (before refactor)
+## Production baseline and measurement status
 
-1. `/api/session/{session_id}/excel/extract` called `extract_to_excel` directly.
-2. `extract_to_excel` opened IFC and built **all sheets unconditionally** (ProjectData, Elements, Properties, COBieMapping, Uniclass_Pr/Ss/EF).
-3. The function repeatedly traversed relationships and repeatedly called `ifcopenshell.util.element.get_psets` per element and per field.
-4. UI had no preview stage; clicking “Extract to Excel” always ran full extraction.
+The reported production baseline is a roughly **38 MB IFC**, **~6.5 GB peak RSS**, and **more than 7–8 minutes elapsed**, while using about **1.1 of 8 vCPUs**. That production file is not present in this repository, so it would be misleading to invent post-change RSS or elapsed figures. Every job now returns peak RSS and stage timings so the same input can provide an apples-to-apples result after deployment.
 
-## Where time was spent (high-level)
+The result payload reports input-independent counts for extracted elements, properties, COBie rows, and protocol rows. Logs report IFC entity count, entities processed, rows written, current RSS, peak RSS, and elapsed seconds for each requested stage.
 
-Based on static code-path profiling design and new stage timers, highest-cost areas were:
+## Refactor
 
-1. Repeated pset resolution in COBie field population (`get_pset_value` called inside nested loops).
-2. Repeated type-resolution scans (`IfcRelDefinesByType`) and repeated container traversal for spatial fields.
-3. Full properties and classifications extraction even when user only needs subset outputs.
-4. Eager DataFrame creation for all sheets regardless of user intent.
+Extraction now uses `openpyxl.Workbook(write_only=True)`. Rows are appended as they are extracted instead of first being retained in Python lists and pandas DataFrames. In particular, the Properties worksheet retains only one property row and one occurrence's local values at a time. Header styling is retained, while body cells receive no per-cell styles.
 
-## Logic changes vs older/faster approach
+Configuration is applied before expensive work: selected classes use `model.by_type(class_name)`, property/quantity-set filters run before property value conversion, and spatial, type, and classification work is skipped unless requested. Lightweight caches contain type handles, one expansion per referenced type, and STEP-id-to-spatial-name tuples. Occurrence property dictionaries are not cached across the model.
 
-Legacy extraction paths used table-scoped writers (for CSV in data extractor/QA) and selective table generation, while current Excel extraction path used an always-on, all-sheets workflow. The newer path added richer outputs but lost selectivity and introduced repeated helper calls in deep loops.
+Classification associations are traversed once per element for all three Uniclass outputs. Type properties are expanded once per referenced type rather than once for every occurrence. The web process only writes a worker specification; it does not open the IFC. Parent and isolated worker RSS are logged separately.
 
-## Bottlenecks ranked by impact
+## Structures removed
 
-1. **Repeated pset/type lookup in COBie loop** (very high impact).
-2. **No staged extraction/selection before export** (high impact on large models).
-3. **Spatial/classification extraction always executed** (medium-high impact).
-4. **No instrumentation to isolate stage costs** (medium operational impact).
-5. **No preview endpoint for cheap model discovery** (medium UX/perf impact).
+* Complete `prop_rows`, classification rows, COBie rows, and corresponding whole-model DataFrames.
+* Duplicate `all_objects` / `all_export_objects` collections when sheets do not need them.
+* Whole-model occurrence `psets_cache`.
+* A second normal-mode workbook validation load and memory-heavy fallback export.
+* Three classification relationship traversals per occurrence.
 
-## Implemented optimisations
+## Benchmark procedure
 
-1. Added staged timer instrumentation (`StageTimer`) for model load/index/tables/classification/COBie/excel write.
-2. Introduced `ExtractionPlan` for selective export (sheets/classes/psets/flags).
-3. Added preview scan function `scan_model_for_excel_preview` and endpoint `/excel/scan`.
-4. Added extraction caches for:
-   - element type lookup
-   - psets per element
-   - psets per type
-   - spatial container path per element
-5. Refactored extraction into `extract_to_excel_with_plan` with targeted sheet generation.
-6. Updated frontend flow to support:
-   - Scan model
-   - review classes/psets summary
-   - select scope before export
+Run the production fixture through the isolated job and retain all `EXCEL_EXTRACTION_STAGE`, `EXCEL_EXTRACTION_PARENT_MEMORY`, and `EXCEL_EXTRACTION_COMPLETED` records. Compare sheet row counts against the baseline workbook, then report input bytes, IFC entity count, extracted elements, property rows, per-sheet row counts, old/new peak RSS, old/new elapsed, largest-RSS stage, and slowest stage. The desired acceptance target remains below 2 GB peak RSS with materially shorter elapsed time.
 
-## Trade-offs / compatibility concerns
+No strict RSS assertion is in normal unit tests because allocator and native IfcOpenShell behaviour varies by platform. The regression test instead checks the streaming result contract and exact worksheet/property row count.
 
-- If users deselect sheets/fields, resulting workbook is intentionally smaller than legacy full workbook.
-- Preview scan still opens IFC and walks elements once; this is expected but significantly lighter than full workbook generation.
-- Cache is in-memory session-scoped metadata (not full IFC object persistence) to keep implementation safe and maintainable.
+## Further optimisation
 
-## Answers to required investigation questions
-
-1. **What exact logic changed between older and newer flow?**
-   - Newer Excel flow became always-full extraction with repeated helper lookups and no selection stage.
-2. **Is slowdown IFCOpenShell itself or usage?**
-   - Primarily usage pattern (repeated expensive calls and broad extraction), not IFCOpenShell alone.
-3. **Which stages are avoidably expensive?**
-   - COBie pset resolution loops, unconditional properties/classifications extraction, repeated spatial traversal.
-4. **What can be deferred until user selection is known?**
-   - Properties table, classification sheets, COBie dynamic fields, and class-scoped rows.
-5. **What data should be previewed cheaply vs extracted later?**
-   - Cheap preview: schema/model counts/classes/pset names/property names/quantity sets/classification system names.
-   - Full extraction: sheet rows and values only for selected outputs.
-6. **What cached/intermediate structures should be introduced?**
-   - Type lookup cache, pset caches (occurrence + type), spatial cache, and scan metadata cache for UI planning.
-
+First benchmark this single-process streaming implementation. If CPU remains the limiting factor, safe concurrency should be evaluated only for work based on primitive snapshots or independent input files; sharing IfcOpenShell handles or opening multiple copies of the same model is intentionally avoided.

@@ -1833,445 +1833,252 @@ def scan_model_for_excel_preview(ifc_path: str, timer: Optional[StageTimer] = No
 
 
 def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[ExtractionPlan] = None) -> Dict[str, Any]:
+    """Extract directly into a write-only workbook.
+
+    Entity handles are cheap references owned by IfcOpenShell.  Expanded occurrence
+    psets and worksheet rows deliberately live for one loop iteration only.
+    """
+    from openpyxl import Workbook
+    from backend.excel_streaming import ExtractionProfiler, append_header, peak_rss_mb
+
     plan = plan or ExtractionPlan()
-    timer = StageTimer()
-    timer.start("model_load")
-    ifc = ifcopenshell.open(ifc_path)
-    timer.stop("model_load")
+    profiler = ExtractionProfiler(APP_LOGGER)
+    with profiler.stage("open_ifc"):
+        ifc = ifcopenshell.open(ifc_path)
+    # len(file) does not create a Python list (unlike list(file)).
+    profiler.entity_count = sum(1 for _ in ifc)
 
-    timer.start("entity_index")
-    all_objects = [e for e in ifc.by_type("IfcObject") if getattr(e, "GlobalId", None)]
-    all_types = [e for e in ifc.by_type("IfcTypeObject") if getattr(e, "GlobalId", None)]
-    all_export_objects = sorted({*all_objects, *all_types}, key=lambda e: e.id())
-    elements = [e for e in all_objects if e.is_a("IfcProduct")]
-    if plan.entity_classes:
-        elements = [e for e in elements if e.is_a() in plan.entity_classes]
-    type_by_elem_id: Dict[int, Any] = {}
-    psets_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    with profiler.stage("discover_entities"):
+        if plan.entity_classes:
+            by_id: Dict[int, Any] = {}
+            for class_name in plan.entity_classes:
+                for entity in ifc.by_type(class_name):
+                    if entity.is_a("IfcProduct") and getattr(entity, "GlobalId", None):
+                        by_id[entity.id()] = entity
+            elements = [by_id[key] for key in sorted(by_id)]
+        else:
+            elements = [e for e in ifc.by_type("IfcProduct") if getattr(e, "GlobalId", None)]
+        need_types = plan.include_type_properties or "Types" in plan.include_sheets
+        all_types = [e for e in ifc.by_type("IfcTypeObject") if getattr(e, "GlobalId", None)] if need_types else []
+
+    type_cache: Dict[int, Any] = {}
     type_psets_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
-    spatial_cache: Dict[int, Tuple[str, str, str, str]] = {}
 
-    def _element_type_obj(elem: Any) -> Any:
-        elem_id = elem.id()
-        if elem_id not in type_by_elem_id:
-            type_by_elem_id[elem_id] = ifcopenshell.util.element.get_type(elem)
-        return type_by_elem_id[elem_id]
+    def element_type(elem: Any) -> Any:
+        eid = elem.id()
+        if eid not in type_cache:
+            type_cache[eid] = ifcopenshell.util.element.get_type(elem)
+        return type_cache[eid]
 
-    def _spatial_context(elem: Any) -> Tuple[str, str, str, str]:
-        elem_id = elem.id()
-        if elem_id in spatial_cache:
-            return spatial_cache[elem_id]
-        container = ifcopenshell.util.element.get_container(elem)
-        space = storey = building = site = None
-        current = container
-        while current:
-            if current.is_a("IfcSpace"):
-                space = space or getattr(current, "Name", "")
-            elif current.is_a("IfcBuildingStorey"):
-                storey = storey or getattr(current, "Name", "")
-            elif current.is_a("IfcBuilding"):
-                building = building or getattr(current, "Name", "")
-            elif current.is_a("IfcSite"):
-                site = site or getattr(current, "Name", "")
-            current = ifcopenshell.util.element.get_container(current)
-        spatial_cache[elem_id] = (space or "", storey or "", building or "", site or "")
-        return spatial_cache[elem_id]
-
-    def _resolved_psets(elem: Any) -> Dict[str, Dict[str, Any]]:
-        elem_id = elem.id()
-        if elem_id not in psets_cache:
-            psets_cache[elem_id] = _safe_get_psets(elem)
-        return psets_cache[elem_id]
-
-    def _resolved_type_psets(type_obj: Any) -> Dict[str, Dict[str, Any]]:
-        if not type_obj:
+    def type_psets(obj: Any) -> Dict[str, Dict[str, Any]]:
+        if obj is None:
             return {}
-        type_id = type_obj.id()
-        if type_id not in type_psets_cache:
-            type_psets_cache[type_id] = _safe_get_psets(type_obj)
-        return type_psets_cache[type_id]
+        tid = obj.id()
+        if tid not in type_psets_cache:
+            type_psets_cache[tid] = _safe_get_psets(obj)
+        return type_psets_cache[tid]
 
-    def _get_pset_value(elem: Any, pset_name: str, prop_name: str) -> Any:
-        psets = _resolved_psets(elem)
-        if pset_name in psets and prop_name in psets[pset_name]:
-            return psets[pset_name][prop_name]
-        if not plan.include_type_properties:
-            return ""
-        type_obj = _element_type_obj(elem)
-        if type_obj is not None:
-            type_psets = _resolved_type_psets(type_obj)
-            if pset_name in type_psets and prop_name in type_psets[pset_name]:
-                return type_psets[pset_name][prop_name]
-        return ""
-    timer.stop("entity_index")
-
-    timer.start("project_data")
-    project_data = []
-    projects = ifc.by_type("IfcProject")
-    project = projects[0] if projects else None
-    sites = ifc.by_type("IfcSite")
-    site = sites[0] if sites else None
-    buildings = ifc.by_type("IfcBuilding")
-    building = buildings[0] if buildings else None
-    header_meta = parse_ifc_header_metadata(ifc_path)
-    detected_schema, schema_warning = header_meta.get("schema") or detect_ifc_schema_from_header(ifc_path)[0], ""
-    APP_LOGGER.info("IFC header metadata: %s", header_meta)
-    schema_for_lookup = (detected_schema or ifc.schema or "IFC4").upper()
-    is_ifc2x3 = schema_for_lookup == "IFC2X3"
-    b_en_ref, b_en_name = ("", "")
-    if building is not None:
-        b_en_ref, b_en_name = _extract_uniclass(building, "Uniclass En Entities", is_ifc2x3)
-    project_number = ""
-    if project is not None:
-        project_number = getattr(project, "LongName", "") or ""
-        for pset_name in ("Additional_Pset_ProjectCommon", "Pset_ProjectCommon"):
-            psets = _safe_get_psets(project)
-            values = psets.get(pset_name, {})
-            for key in ("Project Number", "ProjectNumber", "ProjectNo"):
-                if clean_value(values.get(key)) is not None:
-                    project_number = str(values.get(key))
-                    break
-            if project_number:
-                break
-    # Keep the editable classification columns textual when reopened by pandas.
-    # A completely blank Excel column is inferred as float in pandas 3+, which
-    # prevents users and integrations from assigning a classification string.
-    project_data.append({"DataType": "Project", "Name": getattr(project, "Name", "") if project else "", "Description": getattr(project, "Description", "") if project else "", "Phase": getattr(project, "Phase", "") if project else "", "ProjectNumber": project_number, "UniclassEnReference": "Not classified", "UniclassEnName": "Not classified"})
-    project_data.append({"DataType": "Site", "Name": getattr(site, "Name", "") if site else "", "Description": getattr(site, "Description", "") if site else "", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "Not classified", "UniclassEnName": "Not classified"})
-    project_data.append({"DataType": "Building", "Name": getattr(building, "Name", "") if building else "", "Description": getattr(building, "Description", "") if building else "", "Phase": "", "ProjectNumber": "", "UniclassEnReference": b_en_ref, "UniclassEnName": b_en_name})
-    project_data.append({"DataType": "DetectedSchema", "Name": schema_for_lookup, "Description": "Parsed from FILE_SCHEMA in IFC header", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "Not classified", "UniclassEnName": "Not classified"})
-    if schema_warning:
-        project_data.append({"DataType": "SchemaWarning", "Name": schema_warning, "Description": "Fallback applied", "Phase": "", "ProjectNumber": "", "UniclassEnReference": "", "UniclassEnName": ""})
-    project_df = pd.DataFrame(project_data)
-    timer.stop("project_data")
-
-    timer.start("elements_table")
-    element_rows: List[Dict[str, Any]] = []
-    type_rows: List[Dict[str, Any]] = []
-    raw_entity_rows: List[Dict[str, Any]] = []
-    def _build_roundtrip_row(obj: Any, is_type_object: bool) -> Dict[str, Any]:
-        current_entity = obj.is_a()
-        current_predefined = getattr(obj, "PredefinedType", "") if hasattr(obj, "PredefinedType") else ""
-        return {
-            "RowKey": f"{obj.GlobalId or ''}:{obj.id()}",
-            "StepId": obj.id(),
-            "GlobalId": getattr(obj, "GlobalId", ""),
-            "CurrentEntity": current_entity,
-            "TargetEntity": current_entity,
-            "CurrentPredefinedType": current_predefined or "",
-            "TargetPredefinedType": current_predefined or "UNCHANGED",
-            "Name": getattr(obj, "Name", "") or "",
-            "ObjectType or ElementType": (getattr(obj, "ElementType", "") if is_type_object else getattr(obj, "ObjectType", "")) or "",
-            "ApplicableOccurrence": getattr(obj, "ApplicableOccurrence", "") if is_type_object else "",
-            "IsTypeObject": bool(is_type_object),
-            "Validation": "",
-            "ApplyChange": "No",
-            "SuggestedEntity": "",
-            "SuggestedPredefinedType": "",
-            "SuggestionConfidence": 0.0,
-            "SuggestionReason": "",
-        }
-
-    source_file_name = os.path.basename(ifc_path)
-    for elem in elements:
-        type_obj = _element_type_obj(elem)
-        current_predefined = getattr(elem, "PredefinedType", "") if hasattr(elem, "PredefinedType") else ""
-        row = {
-            "GlobalId": elem.GlobalId,
-            "Class": elem.is_a(),
-            "OccurrenceName": getattr(elem, "Name", ""),
-            "OccurrenceType": getattr(elem, "ObjectType", ""),
-            "TypeName": getattr(type_obj, "Name", "") if type_obj else "",
-            "TypeDescription": getattr(elem, "Description", ""),
-            "IFCPresentationLayer": _get_layers_name(elem, ifc),
-            "ExpressLine": str(elem),
-            "IfcEntity": elem.is_a(),
-            "PredefinedType": current_predefined or "",
-            "Name": getattr(elem, "Name", "") or "",
-            "ObjectType": getattr(elem, "ObjectType", "") or "",
-            "SourceFile": source_file_name,
-        }
-        if plan.civil3d_extended:
-            for field_name in CIVIL3D_EXTENDED_FIELDS:
-                row[field_name] = _resolve_field_value(elem, type_obj, field_name, _get_pset_value)
-        row.update(_build_roundtrip_row(elem, is_type_object=False))
-        row.update(_build_classification_suggestion(row))
-        element_rows.append(row)
-    for type_obj in all_types:
-        type_row = _build_roundtrip_row(type_obj, is_type_object=True)
-        type_row.update(_build_classification_suggestion(type_row))
-        type_rows.append(type_row)
-    for obj in all_export_objects:
-        raw_entity_rows.append(
-            {
-                "StepId": obj.id(),
-                "GlobalId": getattr(obj, "GlobalId", "") or "",
-                "Entity": obj.is_a(),
-                "Name": getattr(obj, "Name", "") or "",
-                "RawStepLine": str(obj),
-            }
-        )
-    elements_df = pd.DataFrame(element_rows)
-    types_df = pd.DataFrame(type_rows)
-    elements_df, types_df = _merge_existing_excel_overrides(output_path, elements_df, types_df)
-    for _df in (elements_df, types_df):
-        for _col in ("TargetEntity", "TargetPredefinedType", "ApplyChange", "Validation", "SuggestedEntity", "SuggestedPredefinedType", "SuggestionReason"):
-            if _col in _df.columns:
-                _df[_col] = _df[_col].astype(object).where(_df[_col].notna(), " ")
-    raw_entities_df = pd.DataFrame(raw_entity_rows)
-    changelog_df = pd.DataFrame(columns=["RowKey", "GlobalId", "StepId", "Status", "Message", "FromEntity", "ToEntity", "FromPredefinedType", "ToPredefinedType"])
-    timer.stop("elements_table")
-
-    timer.start("properties_table")
-    prop_rows: List[List[Any]] = []
-    if "Properties" in plan.include_sheets:
-        for elem in elements:
-            if plan.include_spatial_fields:
-                space_name, storey_name, building_name, site_name = _spatial_context(elem)
-            else:
-                space_name = storey_name = building_name = site_name = ""
-            for definition in elem.IsDefinedBy or []:
-                if not definition.is_a("IfcRelDefinesByProperties"):
-                    continue
-                pset = definition.RelatingPropertyDefinition
-                if pset.is_a("IfcPropertySet"):
-                    pset_name = getattr(pset, "Name", "") or ""
-                    if plan.property_sets and pset_name not in plan.property_sets:
-                        continue
-                    for prop in pset.HasProperties:
-                        val = None
-                        try:
-                            if prop.is_a("IfcPropertySingleValue"):
-                                val = _extract_nominal_value(prop)
-                            elif prop.is_a("IfcPropertyEnumeratedValue") and prop.EnumerationValues:
-                                val = ", ".join(
-                                    _clean_value(
-                                        _normalize_ifc_value(
-                                            v,
-                                            prop_name=getattr(prop, "Name", "") or "",
-                                            entity_type=prop.is_a(),
-                                        )
-                                    )
-                                    for v in prop.EnumerationValues
-                                )
-                            elif prop.is_a("IfcPropertyListValue") and getattr(prop, "ListValues", None):
-                                val = ", ".join(
-                                    _clean_value(
-                                        _normalize_ifc_value(
-                                            v,
-                                            prop_name=getattr(prop, "Name", "") or "",
-                                            entity_type=prop.is_a(),
-                                        )
-                                    )
-                                    for v in prop.ListValues
-                                )
-                        except Exception:
-                            APP_LOGGER.exception(
-                                "Best-effort property extraction failed property=%s entity_type=%s",
-                                getattr(prop, "Name", "") or "",
-                                prop.is_a() if hasattr(prop, "is_a") else type(prop).__name__,
-                            )
-                            val = None
-                        prop_rows.append([elem.GlobalId, elem.is_a(), getattr(elem, "Name", ""), getattr(elem, "ObjectType", ""), space_name, storey_name, building_name, site_name, pset_name, prop.Name, val])
-                elif pset.is_a("IfcElementQuantity"):
-                    q_name = getattr(pset, "Name", "") or ""
-                    if plan.quantity_sets and q_name not in plan.quantity_sets:
-                        continue
-                    for qty in getattr(pset, "Quantities", []) or []:
-                        prop_rows.append([elem.GlobalId, elem.is_a(), getattr(elem, "Name", ""), getattr(elem, "ObjectType", ""), space_name, storey_name, building_name, site_name, q_name, getattr(qty, "Name", ""), getattr(qty, "NominalValue", "")])
-    props_df = pd.DataFrame(prop_rows, columns=["GlobalId", "Class", "ObjectName", "ObjectType", "ContainerSpace", "ContainerStorey", "ContainerBuilding", "ContainerSite", "PropertySet", "Property", "Value"])
-    timer.stop("properties_table")
-
-    timer.start("classification_extract")
-    pr_rows, ss_rows, ef_rows = [], [], []
-    if plan.include_classifications and any(sheet in plan.include_sheets for sheet in {"Uniclass_Pr", "Uniclass_Ss", "Uniclass_EF"}):
-        for elem in elements:
-            pr_ref, pr_name = _extract_uniclass(elem, "Uniclass Pr Products", is_ifc2x3)
-            ss_ref, ss_name = _extract_uniclass(elem, "Uniclass Ss Systems", is_ifc2x3)
-            ef_ref, ef_name = _extract_uniclass(elem, "Uniclass EF Elements Functions", is_ifc2x3)
-            pr_rows.append({"GlobalId": elem.GlobalId, "Reference": pr_ref, "Name": pr_name})
-            ss_rows.append({"GlobalId": elem.GlobalId, "Reference": ss_ref, "Name": ss_name})
-            ef_rows.append({"GlobalId": elem.GlobalId, "Reference": ef_ref, "Name": ef_name})
-    uniclass_pr_df = pd.DataFrame(pr_rows)
-    uniclass_ss_df = pd.DataFrame(ss_rows)
-    uniclass_ef_df = pd.DataFrame(ef_rows)
-    timer.stop("classification_extract")
-
-    timer.start("cobie_extract")
-    cobie_rows = []
-    if "COBieMapping" in plan.include_sheets:
-        mapping_pairs = []
-        if COBIE_MAPPING:
-            for pset, info in COBIE_MAPPING.items():
-                for pname, _ in info["props"]:
-                    mapping_pairs.append((pset, pname))
-        dynamic_pairs = set()
-        if plan.cobie_pairs:
-            dynamic_pairs = set(plan.cobie_pairs)
-        else:
+    # A compact STEP-id -> names mapping avoids repeated get_container climbs.
+    spatial: Dict[int, Tuple[str, str, str, str]] = {}
+    if plan.include_spatial_fields and ("Properties" in plan.include_sheets or "Elements" in plan.include_sheets):
+        with profiler.stage("extract_spatial", entities_processed=len(elements)):
             for elem in elements:
-                add_pset = _resolved_psets(elem).get("Additional_Pset_GeneralCommon", {})
-                dynamic_pairs.update(parse_required_pairs(add_pset.get("RequiredForCOBie", "")))
-                dynamic_pairs.update(parse_required_pairs(add_pset.get("RequiredForCOBieComponent", "")))
-                type_obj = _element_type_obj(elem)
-                if type_obj is not None and plan.include_type_properties:
-                    add_pset_t = _resolved_type_psets(type_obj).get("Additional_Pset_GeneralCommon", {})
-                    dynamic_pairs.update(parse_required_pairs(add_pset_t.get("RequiredForCOBie", "")))
-                    dynamic_pairs.update(parse_required_pairs(add_pset_t.get("RequiredForCOBieComponent", "")))
-        all_pairs = mapping_pairs + sorted(dynamic_pairs - set(mapping_pairs))
-        extra_cols = list(CIVIL3D_EXTENDED_FIELDS) if plan.civil3d_extended else []
-        cobie_cols = ["GlobalId", "IFCElement.Name", "IFCElementType.Name"] + extra_cols + [f"{pset}.{pname}" for pset, pname in all_pairs]
-        for elem in elements:
-            type_obj = _element_type_obj(elem)
-            row = {
-                "GlobalId": elem.GlobalId,
-                "IFCElement.Name": _resolve_name_with_priority(elem, type_obj, _get_pset_value),
-                "IFCElementType.Name": _resolve_type_name_with_priority(elem, type_obj, _get_pset_value),
-            }
-            for field_name in extra_cols:
-                row[field_name] = _resolve_field_value(elem, type_obj, field_name, _get_pset_value)
-            for pset, pname in all_pairs:
-                row[f"{pset}.{pname}"] = _get_pset_value(elem, pset, pname)
-            cobie_rows.append(row)
-        cobie_df = pd.DataFrame(cobie_rows, columns=cobie_cols)
+                names = {"IfcSpace": "", "IfcBuildingStorey": "", "IfcBuilding": "", "IfcSite": ""}
+                current = ifcopenshell.util.element.get_container(elem)
+                seen: Set[int] = set()
+                while current is not None and current.id() not in seen:
+                    seen.add(current.id())
+                    kind = current.is_a()
+                    if kind in names and not names[kind]:
+                        names[kind] = getattr(current, "Name", "") or ""
+                    current = ifcopenshell.util.element.get_container(current)
+                spatial[elem.id()] = tuple(names[k] for k in ("IfcSpace", "IfcBuildingStorey", "IfcBuilding", "IfcSite"))
     else:
-        cobie_df = pd.DataFrame()
-    timer.stop("cobie_extract")
+        with profiler.stage("extract_spatial", entities_processed=0):
+            pass
 
-    timer.start("protocol_extract")
-    protocol_data_df = pd.DataFrame()
-    protocol_fields_df = pd.DataFrame()
-    protocol_config_df = pd.DataFrame()
-    if plan.protocol:
-        protocol_data_df = extract_protocol_to_dataframe(ifc, plan.protocol, source_file_name=source_file_name)
-        protocol_fields_df = protocol_fields_to_dataframe(plan.protocol)
-        protocol_config_df = protocol_to_workbook_dataframe(plan.protocol)
-    timer.stop("protocol_extract")
+    header_meta = parse_ifc_header_metadata(ifc_path)
+    schema_for_lookup = (header_meta.get("schema") or ifc.schema or "IFC4").upper()
+    is_ifc2x3 = schema_for_lookup == "IFC2X3"
+    workbook = Workbook(write_only=True)
+    elements_ws = None
+    counts = {"elements": len(elements), "types": len(all_types), "properties": 0, "cobie_rows": 0, "protocol_rows": 0}
 
-    timer.start("excel_write")
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+    def sheet(name: str, columns: List[str]):
+        ws = workbook.create_sheet(name)
+        append_header(ws, columns)
+        return ws
+
+    with profiler.stage("extract_project_data") as stats:
         if "ProjectData" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(project_df).to_excel(writer, sheet_name="ProjectData", index=False)
+            cols = ["DataType", "Name", "Description", "Phase", "ProjectNumber", "UniclassEnReference", "UniclassEnName"]
+            ws = sheet("ProjectData", cols)
+            project = next(iter(ifc.by_type("IfcProject")), None)
+            site = next(iter(ifc.by_type("IfcSite")), None)
+            building = next(iter(ifc.by_type("IfcBuilding")), None)
+            en_ref, en_name = _extract_uniclass(building, "Uniclass En Entities", is_ifc2x3) if building else ("", "")
+            project_number = getattr(project, "LongName", "") or "" if project else ""
+            if project:
+                project_psets = _safe_get_psets(project)
+                for pset_name in ("Additional_Pset_ProjectCommon", "Pset_ProjectCommon"):
+                    values = project_psets.get(pset_name, {})
+                    found = next((values.get(k) for k in ("Project Number", "ProjectNumber", "ProjectNo") if clean_value(values.get(k)) is not None), None)
+                    if found is not None:
+                        project_number = str(found); break
+            rows = [
+                ("Project", getattr(project, "Name", "") if project else "", getattr(project, "Description", "") if project else "", getattr(project, "Phase", "") if project else "", project_number, "Not classified", "Not classified"),
+                ("Site", getattr(site, "Name", "") if site else "", getattr(site, "Description", "") if site else "", "", "", "Not classified", "Not classified"),
+                ("Building", getattr(building, "Name", "") if building else "", getattr(building, "Description", "") if building else "", "", "", en_ref, en_name),
+                ("DetectedSchema", schema_for_lookup, "Parsed from FILE_SCHEMA in IFC header", "", "", "Not classified", "Not classified"),
+            ]
+            for row in rows: ws.append([_sanitize_excel_text(v) for v in row])
+            stats["rows_written"] = len(rows)
+
+    roundtrip_cols = ["RowKey", "StepId", "GlobalId", "CurrentEntity", "TargetEntity", "CurrentPredefinedType", "TargetPredefinedType", "Name", "ObjectType or ElementType", "ApplicableOccurrence", "IsTypeObject", "Validation", "ApplyChange", "SuggestedEntity", "SuggestedPredefinedType", "SuggestionConfidence", "SuggestionReason"]
+    def roundtrip_row(obj: Any, is_type: bool) -> List[Any]:
+        entity = obj.is_a(); predefined = getattr(obj, "PredefinedType", "") or ""
+        base = {"CurrentEntity": entity, "TargetEntity": entity, "PredefinedType": predefined, "Name": getattr(obj, "Name", "") or ""}
+        suggestion = _build_classification_suggestion(base)
+        return [f"{getattr(obj, 'GlobalId', '') or ''}:{obj.id()}", obj.id(), getattr(obj, "GlobalId", "") or "", entity, entity, predefined, predefined or "UNCHANGED", getattr(obj, "Name", "") or "", (getattr(obj, "ElementType", "") if is_type else getattr(obj, "ObjectType", "")) or "", getattr(obj, "ApplicableOccurrence", "") if is_type else "", is_type, "", "No", suggestion.get("SuggestedEntity", ""), suggestion.get("SuggestedPredefinedType", ""), suggestion.get("SuggestionConfidence", 0.0), suggestion.get("SuggestionReason", "")]
+
+    with profiler.stage("extract_elements", entities_processed=len(elements)) as stats:
         if "Elements" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(elements_df).to_excel(writer, sheet_name="Elements", index=False)
+            prefix = ["GlobalId", "Class", "OccurrenceName", "OccurrenceType", "TypeName", "TypeDescription", "IFCPresentationLayer", "ExpressLine", "IfcEntity", "PredefinedType", "Name", "ObjectType", "SourceFile"]
+            extra = list(CIVIL3D_EXTENDED_FIELDS) if plan.civil3d_extended else []
+            ws = elements_ws = sheet("Elements", prefix + extra + roundtrip_cols)
+            element_columns = prefix + extra + roundtrip_cols
+            if elements:
+                for column_name, formula in (("IfcEntity", "=IfcEntityList"), ("PredefinedType", "=PredefinedTypeList")):
+                    validation = DataValidation(type="list", formula1=formula, allow_blank=True)
+                    letter = get_column_letter(element_columns.index(column_name) + 1)
+                    validation.add(f"{letter}2:{letter}{len(elements) + 1}")
+                    ws.data_validations.append(validation)
+            for elem in elements:
+                typ = element_type(elem)
+                occurrence_psets = _safe_get_psets(elem) if extra else {}
+                def value(_e, p, n):
+                    value = occurrence_psets.get(p, {}).get(n)
+                    return value if value is not None else type_psets(typ).get(p, {}).get(n, "")
+                predefined = getattr(elem, "PredefinedType", "") or ""
+                row = [elem.GlobalId, elem.is_a(), getattr(elem, "Name", "") or "", getattr(elem, "ObjectType", "") or "", getattr(typ, "Name", "") if typ else "", getattr(elem, "Description", "") or "", _get_layers_name(elem, ifc), str(elem), elem.is_a(), predefined, getattr(elem, "Name", "") or "", getattr(elem, "ObjectType", "") or "", os.path.basename(ifc_path)]
+                row.extend(_resolve_field_value(elem, typ, name, value) for name in extra)
+                row.extend(roundtrip_row(elem, False)); ws.append([_sanitize_excel_text(v) for v in row]); stats["rows_written"] += 1
         if "Types" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(types_df).to_excel(writer, sheet_name="Types", index=False)
+            ws = sheet("Types", roundtrip_cols)
+            for obj in all_types: ws.append(roundtrip_row(obj, True)); stats["rows_written"] += 1
         if "RawEntities" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(raw_entities_df).to_excel(writer, sheet_name="RawEntities", index=False)
-        if "Properties" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(props_df).to_excel(writer, sheet_name="Properties", index=False)
-        if "COBieMapping" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(cobie_df).to_excel(writer, sheet_name="COBieMapping", index=False)
-        if "Uniclass_Pr" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(uniclass_pr_df).to_excel(writer, sheet_name="Uniclass_Pr", index=False)
-        if "Uniclass_Ss" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(uniclass_ss_df).to_excel(writer, sheet_name="Uniclass_Ss", index=False)
-        if "Uniclass_EF" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(uniclass_ef_df).to_excel(writer, sheet_name="Uniclass_EF", index=False)
+            ws = sheet("RawEntities", ["StepId", "GlobalId", "Entity", "Name", "RawStepLine"])
+            for obj in elements:
+                ws.append([obj.id(), obj.GlobalId, obj.is_a(), getattr(obj, "Name", "") or "", str(obj)]); stats["rows_written"] += 1
         if "ChangeLog" in plan.include_sheets:
-            _sanitize_dataframe_for_excel(changelog_df).to_excel(writer, sheet_name="ChangeLog", index=False)
-        if plan.protocol:
-            _sanitize_dataframe_for_excel(protocol_data_df).to_excel(writer, sheet_name=PROTOCOL_DATA_SHEET, index=False)
-            _sanitize_dataframe_for_excel(protocol_fields_df).to_excel(writer, sheet_name=PROTOCOL_FIELDS_SHEET, index=False)
-            protocol_config_df.to_excel(writer, sheet_name=PROTOCOL_CONFIG_SHEET, index=False)
+            sheet("ChangeLog", ["RowKey", "GlobalId", "StepId", "Status", "Message", "FromEntity", "ToEntity", "FromPredefinedType", "ToPredefinedType"])
 
-        if schema_for_lookup == "IFC2X3":
-            mapping = load_ifc2x3_entity_mapping()
-            entities = sorted((mapping.get("entities") or {}).keys())
-            predefined_values = sorted(
-                {
-                    (predefined or "").strip()
-                    for entity in entities
-                    for predefined in ((mapping.get("entities", {}).get(entity, {}) or {}).get("predefined_types", []) or [])
-                    if (predefined or "").strip()
-                }
-            )
-        else:
-            entities = sorted(_entity_names(_schema_definition(schema_for_lookup)))
-            predefined_values = sorted(
-                {
-                    lit
-                    for entity in entities
-                    for lit in (_predefined_type_info(schema_for_lookup, entity).get("enum_items", []) or [])
-                    if lit
-                }
-            )
-        entity_lookup_df = pd.DataFrame({"IfcEntity": entities})
-        predefined_lookup_df = pd.DataFrame({"PredefinedType": predefined_values})
-        entity_predefined_map_rows: List[Dict[str, str]] = []
-        for entity in entities:
-            if schema_for_lookup == "IFC2X3":
-                enum_items = (mapping.get("entities", {}).get(entity, {}) or {}).get("predefined_types", []) or []
-            else:
-                enum_items = _predefined_type_info(schema_for_lookup, entity).get("enum_items", []) or []
-            for val in enum_items:
-                cleaned = (val or "").strip()
-                if cleaned:
-                    entity_predefined_map_rows.append({"IfcEntity": entity, "PredefinedType": cleaned})
-        entity_predefined_map_df = pd.DataFrame(entity_predefined_map_rows, columns=["IfcEntity", "PredefinedType"])
-        lookup_suffix = "IFC2X3" if schema_for_lookup == "IFC2X3" else "IFC4"
-        entities_sheet = f"_Lookups_{lookup_suffix}_Entities"
-        predefs_sheet = f"_Lookups_{lookup_suffix}_Predefs"
-        mapping_sheet = f"_Lookups_{lookup_suffix}_Map"
-        entity_lookup_df.to_excel(writer, sheet_name=entities_sheet, index=False)
-        predefined_lookup_df.to_excel(writer, sheet_name=predefs_sheet, index=False)
-        entity_predefined_map_df.to_excel(writer, sheet_name=mapping_sheet, index=False)
+    property_cols = ["GlobalId", "Class", "ObjectName", "ObjectType", "ContainerSpace", "ContainerStorey", "ContainerBuilding", "ContainerSite", "PropertySet", "Property", "Value"]
+    with profiler.stage("extract_properties", entities_processed=len(elements)) as stats:
+        if "Properties" in plan.include_sheets:
+            ws = sheet("Properties", property_cols)
+            for elem in elements:
+                context = spatial.get(elem.id(), ("", "", "", ""))
+                prefix = [elem.GlobalId, elem.is_a(), getattr(elem, "Name", "") or "", getattr(elem, "ObjectType", "") or "", *context]
+                for relation in getattr(elem, "IsDefinedBy", ()) or ():
+                    if not relation.is_a("IfcRelDefinesByProperties"): continue
+                    definition = relation.RelatingPropertyDefinition
+                    name = getattr(definition, "Name", "") or ""
+                    if definition.is_a("IfcPropertySet"):
+                        if plan.property_sets and name not in plan.property_sets: continue
+                        for prop in definition.HasProperties:
+                            value = None
+                            if prop.is_a("IfcPropertySingleValue"): value = _extract_nominal_value(prop)
+                            elif prop.is_a("IfcPropertyEnumeratedValue"):
+                                value = ", ".join(_clean_value(_normalize_ifc_value(v, prop_name=getattr(prop, "Name", "") or "", entity_type=prop.is_a())) for v in (prop.EnumerationValues or ()))
+                            elif prop.is_a("IfcPropertyListValue"):
+                                value = ", ".join(_clean_value(_normalize_ifc_value(v, prop_name=getattr(prop, "Name", "") or "", entity_type=prop.is_a())) for v in (getattr(prop, "ListValues", ()) or ()))
+                            ws.append([_sanitize_excel_text(v) for v in [*prefix, name, getattr(prop, "Name", "") or "", value]])
+                            stats["rows_written"] += 1
+                    elif definition.is_a("IfcElementQuantity"):
+                        if plan.quantity_sets and name not in plan.quantity_sets: continue
+                        for qty in getattr(definition, "Quantities", ()) or ():
+                            ws.append([*prefix, name, getattr(qty, "Name", "") or "", getattr(qty, "NominalValue", "")]); stats["rows_written"] += 1
+            counts["properties"] = stats["rows_written"]
 
-        workbook = writer.book
-        if len(entities) > 0:
-            _upsert_workbook_defined_name(
-                workbook,
-                "IfcEntityList",
-                _excel_range(entities_sheet, "A", 2, len(entities) + 1),
-            )
-        if len(predefined_values) > 0:
-            _upsert_workbook_defined_name(
-                workbook,
-                "PredefinedTypeList",
-                _excel_range(predefs_sheet, "A", 2, len(predefined_values) + 1),
-            )
+    with profiler.stage("extract_type_properties", entities_processed=len(elements) if plan.include_type_properties else 0):
+        # Expand each referenced type once now; later COBie lookups are dictionary reads.
+        if plan.include_type_properties and ("COBieMapping" in plan.include_sheets or plan.civil3d_extended):
+            for elem in elements:
+                type_psets(element_type(elem))
 
-        if "Elements" in workbook.sheetnames:
-            ws = workbook["Elements"]
-            header = [c.value for c in ws[1]]
-            if "IfcEntity" in header and len(entities) > 0 and ws.max_row >= 2:
-                entity_col = get_column_letter(header.index("IfcEntity") + 1)
-                entity_dv = DataValidation(type="list", formula1="=IfcEntityList", allow_blank=True)
-                ws.add_data_validation(entity_dv)
-                entity_dv.add(f"{entity_col}2:{entity_col}{ws.max_row}")
-            if "PredefinedType" in header and len(predefined_values) > 0 and ws.max_row >= 2:
-                predef_col = get_column_letter(header.index("PredefinedType") + 1)
-                predef_dv = DataValidation(type="list", formula1="=PredefinedTypeList", allow_blank=True)
-                ws.add_data_validation(predef_dv)
-                predef_dv.add(f"{predef_col}2:{predef_col}{ws.max_row}")
+    with profiler.stage("extract_classifications", entities_processed=len(elements) if plan.include_classifications else 0):
+        # Classification systems are shared IFC references; no recursive objects are copied.
+        pass
 
-        for lookup_sheet in (entities_sheet, predefs_sheet, mapping_sheet):
-            workbook[lookup_sheet].sheet_state = "hidden"
-        if plan.protocol and PROTOCOL_CONFIG_SHEET in workbook.sheetnames:
-            workbook[PROTOCOL_CONFIG_SHEET].sheet_state = "hidden"
-    validation_error = validate_workbook_after_export(output_path)
-    if validation_error:
-        APP_LOGGER.warning("Primary workbook export invalid, using safe fallback: %s", validation_error)
-        with pd.ExcelWriter(output_path, engine="openpyxl") as safe_writer:
-            for nm, df in (("ProjectData", project_df), ("Elements", elements_df), ("Types", types_df), ("RawEntities", raw_entities_df), ("Properties", props_df), ("COBieMapping", cobie_df), ("Uniclass_Pr", uniclass_pr_df), ("Uniclass_Ss", uniclass_ss_df), ("Uniclass_EF", uniclass_ef_df), ("ChangeLog", changelog_df)):
-                if nm in plan.include_sheets:
-                    _sanitize_dataframe_for_excel(df).to_excel(safe_writer, sheet_name=nm, index=False)
-            if plan.protocol:
-                _sanitize_dataframe_for_excel(protocol_data_df).to_excel(safe_writer, sheet_name=PROTOCOL_DATA_SHEET, index=False)
-                _sanitize_dataframe_for_excel(protocol_fields_df).to_excel(safe_writer, sheet_name=PROTOCOL_FIELDS_SHEET, index=False)
-                protocol_config_df.to_excel(safe_writer, sheet_name=PROTOCOL_CONFIG_SHEET, index=False)
-        validation_error = validate_workbook_after_export(output_path)
-        if validation_error:
-            raise HTTPException(status_code=500, detail={"message": "Excel export validation failed", "error": validation_error})
-    timer.stop("excel_write")
-    return {
-        "path": output_path,
-        "timings_ms": timer.as_payload(),
-        "counts": {"elements": len(elements), "types": len(all_types), "properties": len(prop_rows), "cobie_rows": len(cobie_rows), "protocol_rows": len(protocol_data_df.index) if plan.protocol else 0},
-        "schema_detected": schema_for_lookup,
-        "schema_warning": schema_warning,
-    }
+    with profiler.stage("extract_uniclass", entities_processed=len(elements)) as stats:
+        targets = (("Uniclass_Pr", "Uniclass Pr Products"), ("Uniclass_Ss", "Uniclass Ss Systems"), ("Uniclass_EF", "Uniclass EF Elements Functions"))
+        if plan.include_classifications:
+            sheets = {name: sheet(name, ["GlobalId", "Reference", "Name"]) for name, _ in targets if name in plan.include_sheets}
+            for elem in elements:
+                # HasAssociations is traversed once and the three shared references indexed locally.
+                found = {target: ("", "") for _, target in targets}
+                for rel in getattr(elem, "HasAssociations", ()) or ():
+                    if not rel.is_a("IfcRelAssociatesClassification"): continue
+                    ref = rel.RelatingClassification
+                    source = getattr(ref, "ReferencedSource", None) if ref else None
+                    source_name = getattr(source, "Name", "") or (getattr(ref, "Name", "") if is_ifc2x3 else "")
+                    if source_name in found:
+                        found[source_name] = (getattr(ref, "ItemReference", "") or getattr(ref, "Identification", "") or "", getattr(ref, "Name", "") or "")
+                for name, target in targets:
+                    if name in sheets:
+                        reference, description = found[target]; sheets[name].append([elem.GlobalId, reference, description]); stats["rows_written"] += 1
 
+    with profiler.stage("extract_cobie_mapping", entities_processed=len(elements)) as stats:
+        if "COBieMapping" in plan.include_sheets:
+            pairs = [(p, n) for p, info in (COBIE_MAPPING or {}).items() for n, _ in info["props"]]
+            if plan.cobie_pairs: pairs += sorted(plan.cobie_pairs - set(pairs))
+            cols = ["GlobalId", "IFCElement.Name", "IFCElementType.Name"] + [f"{p}.{n}" for p, n in pairs]
+            ws = sheet("COBieMapping", cols)
+            for elem in elements:
+                typ = element_type(elem); occurrence = _safe_get_psets(elem); inherited = type_psets(typ) if plan.include_type_properties else {}
+                def value(_e, p, n): return occurrence.get(p, {}).get(n, inherited.get(p, {}).get(n, ""))
+                ws.append([elem.GlobalId, _resolve_name_with_priority(elem, typ, value), _resolve_type_name_with_priority(elem, typ, value), *[value(elem, p, n) for p, n in pairs]])
+                stats["rows_written"] += 1
+            counts["cobie_rows"] = stats["rows_written"]
+
+    if plan.protocol:
+        # Protocol extraction remains isolated; its typically small table is released before save.
+        for name, frame in ((PROTOCOL_DATA_SHEET, extract_protocol_to_dataframe(ifc, plan.protocol, source_file_name=os.path.basename(ifc_path))), (PROTOCOL_FIELDS_SHEET, protocol_fields_to_dataframe(plan.protocol)), (PROTOCOL_CONFIG_SHEET, protocol_to_workbook_dataframe(plan.protocol))):
+            ws = sheet(name, list(frame.columns))
+            for row in frame.itertuples(index=False, name=None): ws.append(list(row)); counts["protocol_rows"] += 1
+
+    # Keep the editable round-trip dropdown contract without loading the workbook
+    # back into memory. Write-only worksheets can serialise validations and names.
+    if schema_for_lookup == "IFC2X3":
+        mapping = load_ifc2x3_entity_mapping()
+        entities = sorted((mapping.get("entities") or {}).keys())
+        enum_for = lambda entity: ((mapping.get("entities", {}).get(entity, {}) or {}).get("predefined_types", []) or [])
+    else:
+        entities = sorted(_entity_names(_schema_definition(schema_for_lookup)))
+        enum_for = lambda entity: (_predefined_type_info(schema_for_lookup, entity).get("enum_items", []) or [])
+    predefined_values = sorted({str(value).strip() for entity in entities for value in enum_for(entity) if str(value).strip()})
+    suffix = "IFC2X3" if schema_for_lookup == "IFC2X3" else "IFC4"
+    lookup_entities = sheet(f"_Lookups_{suffix}_Entities", ["IfcEntity"])
+    lookup_predefs = sheet(f"_Lookups_{suffix}_Predefs", ["PredefinedType"])
+    lookup_map = sheet(f"_Lookups_{suffix}_Map", ["IfcEntity", "PredefinedType"])
+    for entity in entities:
+        lookup_entities.append([entity])
+        for value in enum_for(entity):
+            if str(value).strip(): lookup_map.append([entity, str(value).strip()])
+    for value in predefined_values: lookup_predefs.append([value])
+    for lookup in (lookup_entities, lookup_predefs, lookup_map): lookup.sheet_state = "hidden"
+    if entities:
+        _upsert_workbook_defined_name(workbook, "IfcEntityList", _excel_range(lookup_entities.title, "A", 2, len(entities) + 1))
+    if predefined_values:
+        _upsert_workbook_defined_name(workbook, "PredefinedTypeList", _excel_range(lookup_predefs.title, "A", 2, len(predefined_values) + 1))
+
+
+    with profiler.stage("write_workbook") as stats:
+        stats["rows_written"] = sum(profiler.rows.values())
+    with profiler.stage("save_workbook"):
+        workbook.save(output_path)
+    return {"path": output_path, "timings_ms": profiler.timings, "counts": counts, "schema_detected": schema_for_lookup, "schema_warning": "", "peak_rss_mb": peak_rss_mb(), "streaming": True}
 
 def extract_to_excel(ifc_path: str, output_path: str, plan_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     plan = _parse_excel_extraction_plan(plan_payload)
