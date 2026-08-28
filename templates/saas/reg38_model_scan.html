@@ -1,0 +1,24 @@
+{% set job = model_scan.job %}{% set stats = job.statistics if job else {} %}
+<section class="model-scan">
+  <h3>Regulation 38 Model Scan</h3>
+  {% if not job %}<p>No uploaded IFC is ready to scan.</p>
+  {% elif job.status in ['QUEUED','RUNNING'] %}
+    <p><strong>Processing IFC...</strong></p>
+    <div class="upload-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ job.progress_percent }}"><i style="width:{{ job.progress_percent }}%"></i></div>
+    <p>{{ job.progress_percent }}% · Current step: {{ (job.current_step or 'QUEUED')|replace('_',' ')|title }}</p>
+    <script>window.setTimeout(() => window.location.reload(), 4000);</script>
+  {% elif job.status == 'FAILED' %}
+    <p class="error"><strong>Model scan failed</strong></p><p>The IFC was uploaded successfully but could not be processed.</p>
+    {% if job.error_message %}<p>{{ job.error_message }}</p>{% endif %}
+    <form method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/retry"><button class="button">Retry Scan</button></form>
+  {% elif job.status == 'COMPLETED' %}
+    <p><strong>✓ Model scan complete</strong></p>
+    <div class="scan-statistics">
+      <section><h4>Spatial Structure</h4><dl><dt>Buildings</dt><dd>{{ stats.get('buildings', 0) }}</dd><dt>Storeys</dt><dd>{{ stats.get('storeys', 0) }}</dd><dt>Spaces</dt><dd>{{ stats.get('spaces', 0) }}</dd><dt>Zones</dt><dd>{{ stats.get('ifc_zones', 0) + stats.get('ifc_spatial_zones', 0) }}</dd><dt>Grid Axes</dt><dd>{{ stats.get('grid_axes', 0) }}</dd></dl></section>
+      <section><h4>Fire Safety Data</h4><dl><dt>Walls</dt><dd>{{ stats.get('walls', 0) }}</dd><dt>Fire-rated walls</dt><dd>{{ stats.get('walls_with_detected_fire_rating', 0) }}</dd><dt>Doors</dt><dd>{{ stats.get('doors', 0) }}</dd><dt>Fire-rated doors</dt><dd>{{ stats.get('doors_with_detected_fire_rating', 0) }}</dd><dt>Potential conflicts</dt><dd>{{ stats.get('conflict_count', 0) }}</dd></dl></section>
+      <section><h4>Warnings</h4><dl><dt>Unnamed spaces</dt><dd>{{ stats.get('unnamed_spaces', 0) }}</dd><dt>Custom property matches</dt><dd>{{ stats.get('custom_property_only_fire_findings', 0) }}</dd><dt>Conflicting ratings</dt><dd>{{ stats.get('conflict_count', 0) }}</dd></dl></section>
+    </div>
+    {% if model_scan.warnings %}<h4>Model scan warnings</h4><ul>{% for warning in model_scan.warnings %}<li><strong>{{ warning.title }}</strong>{% if warning.description %} — {{ warning.description }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+</section>
+<div class="wizard-actions"><a class="button ghost" href="?step=3">Back</a></div>

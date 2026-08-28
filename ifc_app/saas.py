@@ -508,9 +508,10 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
         if not project: return HTMLResponse("Project not found.", status_code=404)
         sections = repo.get_sections(token, project_id) if step == 2 else []
         files = repo.list_ifc_files(token, project_id) if step == 3 else []
+        model_scan = repo.model_scan(token, project_id) if step == 4 else {}
         spatial = repo.spatial_review(token, project_id) if step == 5 else {}
         return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files,
-                                spatial=spatial, zone_types=ZONE_TYPES)
+                                model_scan=model_scan, spatial=spatial, zone_types=ZONE_TYPES)
     except SupabaseAuthError as exc:
         return HTMLResponse(exc.public_message, status_code=403 if exc.status_code in {401, 403} else exc.status_code)
 
@@ -595,11 +596,18 @@ async def report_reg38_ifc_failure(request: Request, project_id: str):
     if isinstance(user, RedirectResponse): return user
     payload = await request.json()
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    Regulation38Repository(get_auth_service()).require_project_edit(token, project_id)
+    repository = Regulation38Repository(get_auth_service())
+    repository.require_project_edit(token, project_id)
+    storage_path = str(payload.get("storage_path") or "")
+    if storage_path:
+        try:
+            repository.cleanup_failed_upload(token, project_id, storage_path)
+        except (ValueError, SupabaseAuthError):
+            pass
     LOGGER.error(
         "ifc_direct_upload_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s storage_http_status=%s ifc_files_insert=not_attempted processing_job_insert=not_attempted",
         project_id, user.get("id"), str(payload.get("filename") or ""), int(payload.get("file_size") or 0),
-        str(payload.get("storage_path") or ""), int(payload.get("storage_http_status") or 0),
+        storage_path, int(payload.get("storage_http_status") or 0),
     )
     return JSONResponse({"received": True})
 
@@ -611,6 +619,18 @@ async def remove_reg38_ifc(request: Request, project_id: str, file_id: str):
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     Regulation38Repository(get_auth_service()).remove_ifc(token, project_id, file_id, str(form.get("storage_path") or ""))
     return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/ifc/{file_id}/retry")
+async def retry_reg38_ifc(request: Request, project_id: str, file_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        Regulation38Repository(get_auth_service()).retry_model_scan(token, project_id, file_id)
+        return RedirectResponse(f"/app/regulation-38/projects/{project_id}/setup/model-scan", status_code=303)
+    except SupabaseAuthError as exc:
+        return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
 
 @router.post("/app/projects/{project_id}/regulation-38/spaces/{space_id}")
