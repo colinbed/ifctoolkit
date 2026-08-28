@@ -139,3 +139,6 @@ footer p { color: #b8c3d8; }
   .section, .app-shell, .page-hero { padding: 60px 22px; }
   .project-row { grid-template-columns:1fr 1fr; }.project-head { display:none; }.stepper small { display:none; }.form-grid,.section-checks { grid-template-columns:1fr; }.wide { grid-column:auto; }.spatial-review { grid-template-columns:1fr; }.structure-panel,.details-panel { border:0;border-bottom:1px solid var(--line);max-height:520px }.plan-panel { min-height:500px }.spatial-toolbar { flex-wrap:wrap }
 }
+.section-applicability { display:grid; gap:10px; }
+.section-applicability label { flex-direction:row; align-items:center; justify-content:space-between; }
+.section-applicability select { width:220px; }

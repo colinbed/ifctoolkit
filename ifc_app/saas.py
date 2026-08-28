@@ -342,7 +342,8 @@ def projects(request: Request):
         project_rows = repository.list_projects(token)
         can_create = repository.can_create_project(token)
     except SupabaseAuthError as exc:
-        error = exc.public_message
+        LOGGER.error("Regulation 38 project list failed: %s", exc.detail or exc.public_message)
+        error = "Projects could not be loaded."
     except AttributeError:
         # Keeps the page usable with deployments whose auth adapter predates Data REST.
         error = "Project data is not available from this deployment yet."
@@ -447,6 +448,7 @@ def _wizard_response(request: Request, user: dict[str, Any], project: dict[str, 
         context=_dashboard_context(request, user, **values))
 
 
+@router.get("/app/regulation-38/projects/new", response_class=HTMLResponse)
 @router.get("/app/projects/new", response_class=HTMLResponse)
 def new_reg38_project(request: Request):
     user = _private_user(request)
@@ -461,6 +463,7 @@ def new_reg38_project(request: Request):
     return _wizard_response(request, user, {}, 1)
 
 
+@router.post("/app/regulation-38/projects/new")
 @router.post("/app/projects/new")
 async def create_reg38_project(request: Request):
     user = _private_user(request)
@@ -474,7 +477,7 @@ async def create_reg38_project(request: Request):
         project = ProjectCreate(**{key: (str(form.get(key) or "") or None) for key in ProjectCreate.__dataclass_fields__ if key not in {"project_status", "country"}},
                                 country=str(form.get("country") or "United Kingdom"))
         project_id = repository.create_project(token, project)
-        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=2", status_code=303)
+        return RedirectResponse(f"/app/regulation-38/projects/{project_id}/setup/scope", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         message = str(exc) if isinstance(exc, ValueError) else exc.public_message
         return _wizard_response(request, user, dict(form), 1, error=message)
@@ -498,6 +501,16 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
         return HTMLResponse(exc.public_message, status_code=403 if exc.status_code in {401, 403} else exc.status_code)
 
 
+@router.get("/app/regulation-38/projects/{project_id}/setup/{setup_step}", response_class=HTMLResponse)
+def regulation_38_setup(request: Request, project_id: str, setup_step: str):
+    step_map = {"details": 1, "scope": 2, "upload-ifc": 3, "model-scan": 4,
+                "spaces-zones": 5, "fire-construction": 6, "plans": 7,
+                "information-requirements": 8, "summary": 9}
+    if setup_step not in step_map:
+        return HTMLResponse("Setup step not found.", status_code=404)
+    return regulation_38_project(request, project_id, step_map[setup_step])
+
+
 @router.post("/app/projects/{project_id}/regulation-38/details")
 async def update_reg38_details(request: Request, project_id: str):
     user = _private_user(request)
@@ -517,10 +530,12 @@ async def update_reg38_scope(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    enabled = {str(value) for value in form.getlist("sections")}
+    applicability = {key: str(form.get(f"applicability_{key}") or "TO_BE_CONFIRMED") for key, _ in REG38_DEFAULT_SECTIONS}
     try:
-        Regulation38Repository(get_auth_service()).save_scope(token, project_id, str(form.get("scope_type") or "ENTIRE_BUILDING"), str(form.get("scope_detail") or ""), enabled)
-        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
+        Regulation38Repository(get_auth_service()).save_scope(token, project_id, str(form.get("scope_type") or "ENTIRE_BUILDING"),
+            str(form.get("scope_description") or ""), str(form.get("building_reference") or ""),
+            str(form.get("area_description") or ""), applicability)
+        return RedirectResponse(f"/app/regulation-38/projects/{project_id}/setup/upload-ifc", status_code=303)
     except SupabaseAuthError as exc: return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
 

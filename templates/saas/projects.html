@@ -3,15 +3,15 @@
 {% block content %}
 <section class="app-shell project-index">
   <div class="page-heading"><div><span class="eyebrow">Projects</span><h1>Regulation 38</h1><p>Manage Regulation 38 fire-safety information across your projects.</p></div>
-  {% if can_create %}<a class="button" href="/app/projects/new">New Project</a>{% endif %}</div>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if can_create %}<a class="button" href="/app/regulation-38/projects/new">+ New Project</a>{% endif %}</div>
+  {% if error %}<div class="error"><strong>{{ error }}</strong> <a href="/app/regulation-38">Retry</a></div>{% endif %}
   <p class="notice"><strong>Fire Safety Information:</strong> This workspace supports information collation and completeness review. It does not automatically demonstrate legal or regulatory compliance.</p>
   <div class="project-table" role="table" aria-label="Regulation 38 projects">
     <div class="project-row project-head" role="row"><b>Project</b><b>Building</b><b>Project reference</b><b>Planned handover</b><b>Progress</b><b>Status</b></div>
-    {% for item in projects %}<a class="project-row" role="row" href="/app/projects/{{ item.id }}/regulation-38?step=1">
-      <strong>{{ item.name }}</strong><span>{{ item.building_type or '—' }}</span><span>{{ item.project_reference or '—' }}</span>
+    {% if not error %}{% for item in projects %}<a class="project-row" role="row" href="/app/projects/{{ item.id }}/regulation-38?step=1">
+      <strong>{{ item.name }}</strong><span>{{ item.building_name or '—' }}</span><span>{{ item.project_reference or '—' }}</span>
       <span>{{ item.planned_handover_date or 'Not set' }}</span><span class="progress"><i></i><small>0%</small></span><span><em class="status status-{{ item.project_status|lower }}">{{ item.project_status|title }}</em></span>
-    </a>{% else %}<div class="empty-state"><strong>No Regulation 38 projects yet</strong><p>{% if can_create %}Create a draft project to begin.{% else %}Projects assigned to you will appear here.{% endif %}</p></div>{% endfor %}
+    </a>{% else %}<div class="empty-state"><strong>No Regulation 38 projects yet</strong><p>{% if can_create %}Create your first project to begin collecting and reviewing Regulation 38 fire-safety information.</p><a class="button" href="/app/regulation-38/projects/new">Create New Project</a>{% else %}Projects assigned to you will appear here.</p>{% endif %}</div>{% endfor %}{% endif %}
   </div>
 </section>
 {% endblock %}
