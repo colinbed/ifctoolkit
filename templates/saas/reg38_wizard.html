@@ -38,9 +38,11 @@
         </label>
         <div id="ifc-upload-status" class="upload-state" aria-live="polite"></div>
       </div>
-      <div class="file-list" id="ifc-file-list">{% for file in files %}<article data-file-id="{{ file.id }}"><div><strong>✓ IFC uploaded</strong><span>{{ file.original_filename }}</span><small>{{ '%.1f'|format(file.file_size / 1048576) }} MB · Status: Ready for model scan</small></div>{% if file.ifc_processing_jobs and file.ifc_processing_jobs[0].status == 'QUEUED' %}<form method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ file.id }}/remove"><input type="hidden" name="storage_path" value="{{ file.storage_path }}"><button class="link replace-ifc" type="button">Replace IFC</button><button class="link danger">Remove</button></form>{% endif %}</article>{% endfor %}</div>
+      <div class="file-list" id="ifc-file-list">{% for file in files %}<article data-file-id="{{ file.id }}"><div><strong>✓ IFC uploaded</strong><span>{{ file.original_filename }}</span><small>{{ '%.1f'|format(file.file_size / 1048576) }} MB · Status: Queued for model scan</small></div>{% if file.ifc_processing_jobs and file.ifc_processing_jobs[0].status == 'QUEUED' %}<form method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ file.id }}/remove"><input type="hidden" name="storage_path" value="{{ file.storage_path }}"><button class="link replace-ifc" type="button">Replace IFC</button><button class="link danger">Remove</button></form>{% endif %}</article>{% endfor %}</div>
       <div class="wizard-actions"><a class="button ghost" href="?step=2">Back</a><a id="ifc-next" class="button{% if not ready.value %} disabled{% endif %}" {% if ready.value %}href="/app/regulation-38/projects/{{ project_id }}/setup/model-scan"{% else %}aria-disabled="true" tabindex="-1"{% endif %}>Next: Model Scan</a></div>
       <script src="/static/reg38-ifc-upload.js"></script>
+    {% elif step == 4 %}
+      {% include "saas/reg38_model_scan.html" %}
     {% elif step == 5 %}
       {% include "saas/reg38_spatial_review.html" %}
     {% else %}<div class="pending"><span>{{ step }}</span><h3>{{ steps[step-1] }}</h3><p>Model processing has not yet been implemented.</p></div><div class="wizard-actions"><a class="button ghost" href="?step={{ step-1 }}">Back</a>{% if step < 9 %}<a class="button" href="?step={{ step+1 }}">Next</a>{% else %}<a class="button" href="/app/projects">Return to projects</a>{% endif %}</div>{% endif %}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,15 +36,19 @@ class SupabaseBatchSink:
         self._request("PATCH", f"rest/v1/ifc_files?id=eq.{file_id}", json=values)
 
     def download(self, storage_path: str, destination: Path) -> None:
-        response = requests.get(f"{self.url}/storage/v1/object/authenticated/reg38-evidence/{storage_path}", headers=self.headers, timeout=300)
-        response.raise_for_status()
-        destination.write_bytes(response.content)
+        with requests.get(f"{self.url}/storage/v1/object/authenticated/project-files/{storage_path}",
+                          headers=self.headers, timeout=(30, 1800), stream=True) as response:
+            response.raise_for_status()
+            with destination.open("wb") as output:
+                for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                    if chunk:
+                        output.write(chunk)
 
     def insert_result(self, tables: dict[str, list[dict[str, Any]]]) -> None:
         # Parent-first ordering satisfies all foreign keys. Each slice is a bulk request.
         order = ("buildings", "building_storeys", "ifc_objects", "ifc_object_properties",
                  "ifc_object_relationships", "project_spaces", "project_zones", "project_zone_members",
-                 "project_grids", "project_grid_axes", "fire_requirements", "ifc_scan_warnings")
+                 "project_grids", "project_grid_axes", "fire_requirements", "model_scan_warnings")
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}
         for table in order:
             rows = tables.get(table, [])
@@ -66,9 +71,10 @@ def process_job(sink: SupabaseBatchSink, job: dict[str, Any]) -> None:
             sink.insert_result(result.tables)
             sink.update_file(file_id, status="PROCESSED", ifc_schema=result.statistics.get("ifc_schema"))
             sink.update_job(job_id, status="COMPLETED", current_step="COMPLETE", progress_percent=100,
-                            statistics=result.statistics)
+                            statistics=result.statistics, completed_at=datetime.now(UTC).isoformat())
     except Exception as exc:
-        sink.update_job(job_id, status="FAILED", current_step="FAILED", error_message=str(exc)[:4000])
+        sink.update_job(job_id, status="FAILED", error_message=str(exc)[:4000],
+                        completed_at=datetime.now(UTC).isoformat())
         sink.update_file(file_id, status="FAILED")
         raise
 

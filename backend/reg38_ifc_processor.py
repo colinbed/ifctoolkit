@@ -52,7 +52,7 @@ class ScanResult:
         name: [] for name in ("buildings", "building_storeys", "ifc_objects", "ifc_object_properties",
                               "ifc_object_relationships", "project_spaces", "project_zones",
                               "project_zone_members", "project_grids", "project_grid_axes",
-                              "fire_requirements", "ifc_scan_warnings")
+                              "fire_requirements", "model_scan_warnings")
     })
     statistics: dict[str, int] = field(default_factory=dict)
 
@@ -189,6 +189,7 @@ class Regulation38IfcProcessor:
         building_ids = {o.GlobalId: _id(ifc_file_id, "building", o.GlobalId) for o in buildings}
         for obj in buildings:
             result.tables["buildings"].append({"id": building_ids[obj.GlobalId], "project_id": project_id,
+                "source_ifc_file_id": ifc_file_id,
                 "ifc_source_guid": obj.GlobalId, "name": getattr(obj, "Name", None) or "Unnamed building",
                 "description": getattr(obj, "Description", None)})
         storeys = _safe_by_type(model, "IfcBuildingStorey")
@@ -198,6 +199,7 @@ class Regulation38IfcProcessor:
             if not building and buildings: building = buildings[0]
             if building:
                 result.tables["building_storeys"].append({"id": storey_ids[obj.GlobalId], "building_id": building_ids[building.GlobalId],
+                    "source_ifc_file_id": ifc_file_id,
                     "ifc_source_guid": obj.GlobalId, "name": getattr(obj, "Name", None) or "Unnamed storey",
                     "long_name": getattr(obj, "LongName", None), "elevation": getattr(obj, "Elevation", None)})
 
@@ -274,10 +276,9 @@ class Regulation38IfcProcessor:
                 "centroid_x": c.get("x"), "centroid_y": c.get("y"), "centroid_z": c.get("z"),
                 "source_geometry": {"centroid": c, "footprint": None}})
             if not (getattr(obj, "Name", None) or getattr(obj, "LongName", None) or getattr(obj, "Tag", None)):
-                result.tables["ifc_scan_warnings"].append(self._warning(project_id, file_id, oid, "UNNAMED_SPACE", "Space has no name or number"))
+                result.tables["model_scan_warnings"].append(self._warning(project_id, file_id, oid, "SPACE_MISSING_NAME", "Space missing name", "Space has no name or number"))
         for zone in _safe_by_type(model, "IfcZone") + _safe_by_type(model, "IfcSpatialZone"):
             is_spatial = zone.is_a("IfcSpatialZone"); fire = is_spatial and (_predefined(zone) or "").upper() == "FIRESAFETY"
-            if not (fire or not is_spatial): continue
             zid = _id(file_id, "zone", zone.GlobalId)
             result.tables["project_zones"].append({"id": zid, "project_id": project_id, "source_ifc_object_id": object_ids[zone.GlobalId],
                 "ifc_global_id": zone.GlobalId, "source_kind": "IFC_SPATIAL_ZONE" if is_spatial else "IFC_ZONE",
@@ -289,6 +290,10 @@ class Regulation38IfcProcessor:
                     if getattr(member, "GlobalId", None) in space_ids:
                         result.tables["project_zone_members"].append({"id": _id(file_id, "zone-member", f"{zone.GlobalId}:{member.GlobalId}"),
                             "zone_id": zid, "space_id": space_ids[member.GlobalId], "source": "IFC_GROUP_ASSIGNMENT"})
+            if not any(row["zone_id"] == zid for row in result.tables["project_zone_members"]):
+                result.tables["model_scan_warnings"].append(self._warning(
+                    project_id, file_id, object_ids[zone.GlobalId], "ZONE_WITHOUT_MEMBERS",
+                    "Zone without members", "The source IFC zone has no extracted space members."))
         for grid in _safe_by_type(model, "IfcGrid"):
             gid = _id(file_id, "grid", grid.GlobalId)
             result.tables["project_grids"].append({"id": gid, "project_id": project_id, "source_ifc_object_id": object_ids[grid.GlobalId],
@@ -350,15 +355,16 @@ class Regulation38IfcProcessor:
             conflict = len(high_values) > 1 or bool(occurrence and types and occurrence != types)
             if conflict:
                 for row in candidates: row["review_status"] = "CONFLICT"
-                result.tables["ifc_scan_warnings"].append(self._warning(project_id, file_id, oid, "CONFLICTING_FIRE_RATING", "Occurrence/type or high-confidence fire ratings conflict"))
+                result.tables["model_scan_warnings"].append(self._warning(project_id, file_id, oid, "FIRE_RATING_CONFLICT", "Conflicting fire ratings", "Occurrence/type or high-confidence fire ratings conflict"))
             if candidates and all(r["source_type"] != "STANDARD_IFC_PROPERTY" for r in candidates):
-                result.tables["ifc_scan_warnings"].append(self._warning(project_id, file_id, oid, "CUSTOM_PROPERTY_ONLY", "Fire finding is based only on custom properties"))
+                result.tables["model_scan_warnings"].append(self._warning(project_id, file_id, oid, "FIRE_RATING_CUSTOM_PROPERTY", "Custom fire property match", "Fire finding is based only on custom properties"))
             result.tables["fire_requirements"] += candidates
 
     @staticmethod
-    def _warning(project_id, file_id, oid, code, message):
+    def _warning(project_id, file_id, oid, code, title, description):
         return {"id": _id(file_id, "warning", f"{oid}:{code}"), "project_id": project_id, "ifc_file_id": file_id,
-                "ifc_object_id": oid, "warning_code": code, "message": message, "severity": "WARNING"}
+                "ifc_object_id": oid, "warning_code": code, "category": "MODEL_DATA", "title": title,
+                "description": description, "source_data": {}, "severity": "WARNING", "review_status": "UNREVIEWED"}
 
     def _statistics(self, result):
         objects = result.tables["ifc_objects"]; fires = result.tables["fire_requirements"]
@@ -370,6 +376,7 @@ class Regulation38IfcProcessor:
             "grid_axes": len(result.tables["project_grid_axes"]), "walls": count("IfcWall") + count("IfcWallStandardCase"),
             "walls_with_detected_fire_rating": sum(o["id"] in fire_objects and o["ifc_entity"] in ("IfcWall", "IfcWallStandardCase") for o in objects),
             "doors": count("IfcDoor"), "doors_with_detected_fire_rating": sum(o["id"] in fire_objects and o["ifc_entity"] == "IfcDoor" for o in objects),
-            "custom_property_only_fire_findings": sum(w["warning_code"] == "CUSTOM_PROPERTY_ONLY" for w in result.tables["ifc_scan_warnings"]),
-            "conflict_count": sum(w["warning_code"] == "CONFLICTING_FIRE_RATING" for w in result.tables["ifc_scan_warnings"]),
-            "unnamed_spaces": sum(w["warning_code"] == "UNNAMED_SPACE" for w in result.tables["ifc_scan_warnings"])})
+            "custom_property_only_fire_findings": sum(w["warning_code"] == "FIRE_RATING_CUSTOM_PROPERTY" for w in result.tables["model_scan_warnings"]),
+            "conflict_count": sum(w["warning_code"] == "FIRE_RATING_CONFLICT" for w in result.tables["model_scan_warnings"]),
+            "unnamed_spaces": sum(w["warning_code"] == "SPACE_MISSING_NAME" for w in result.tables["model_scan_warnings"]),
+            "objects_total": len(objects), "properties_total": len(result.tables["ifc_object_properties"])})

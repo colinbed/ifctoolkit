@@ -95,7 +95,7 @@ def validate_ifc(filename: str, size: int) -> None:
 
 
 class Regulation38Repository:
-    BUCKET = "reg38-evidence"
+    BUCKET = "project-files"
 
     def __init__(self, auth: SupabaseAuthService | None = None):
         self.auth = auth or SupabaseAuthService()
@@ -177,7 +177,7 @@ class Regulation38Repository:
         validate_ifc(safe_name, size)
         self.require_project_edit(token, project_id)
         file_id = str(uuid4())
-        storage_path = f"projects/{project_id}/models/{file_id}/{safe_name}"
+        storage_path = f"projects/{project_id}/models/{file_id}/original/{safe_name}"
         url = f"{self.auth.settings.project_url}/storage/v1/object/upload/sign/{self.BUCKET}/{quote(storage_path, safe='/')}"
         try:
             response = requests.post(url, headers=self.auth._headers(token), json={"upsert": False},
@@ -203,7 +203,7 @@ class Regulation38Repository:
         safe_name = Path(filename).name
         validate_ifc(safe_name, size)
         self.require_project_edit(token, project_id)
-        expected_path = f"projects/{project_id}/models/{file_id}/{safe_name}"
+        expected_path = f"projects/{project_id}/models/{file_id}/original/{safe_name}"
         if storage_path != expected_path:
             raise ValueError("The IFC upload details are invalid.")
         object_url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
@@ -223,20 +223,15 @@ class Regulation38Repository:
             LOGGER.error("ifc_upload_size_mismatch project_id=%s user_id=%s filename=%s declared_size=%s stored_size=%s storage_path=%s",
                          project_id, user_id, safe_name, size, stored_size, storage_path)
             raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=400)
-        insert_result: Any = None
-        job_result: Any = None
+        job_id = str(uuid4())
         try:
-            insert_result = self._data_request("POST", "ifc_files", token, json={"id": file_id, "project_id": project_id, "storage_path": storage_path,
-                "original_filename": safe_name, "file_size": size, "uploaded_by": user_id, "status": "UPLOADED"})
-            job_id = str(uuid4())
-            job_result = self._data_request("POST", "ifc_processing_jobs", token, json={"id": job_id, "project_id": project_id,
-                "ifc_file_id": file_id, "status": "QUEUED", "progress_percent": 0})
+            self._data_request("POST", "rpc/finalize_ifc_upload", token, json={
+                "target_project": project_id, "target_file": file_id, "target_job": job_id,
+                "object_path": storage_path, "original_name": safe_name, "object_size": size})
         except Exception:
-            self._data_request("DELETE", f"ifc_processing_jobs?ifc_file_id=eq.{quote(file_id)}", token)
-            self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}", token)
             requests.delete(object_url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
-            LOGGER.exception("ifc_upload_finalize_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s ifc_files_insert=%r processing_job_insert=%r",
-                             project_id, user_id, safe_name, size, storage_path, insert_result, job_result)
+            LOGGER.exception("ifc_upload_finalize_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s",
+                             project_id, user_id, safe_name, size, storage_path)
             raise
         return {"file_id": file_id, "job_id": job_id, "storage_path": storage_path}
 
@@ -250,9 +245,32 @@ class Regulation38Repository:
         url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
         requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
 
+    def cleanup_failed_upload(self, token: str, project_id: str, storage_path: str) -> None:
+        """Remove an uploaded object that never reached atomic finalization."""
+        self.require_project_edit(token, project_id)
+        if not storage_path.startswith(f"projects/{project_id}/models/") or "/original/" not in storage_path:
+            raise ValueError("The IFC file path is invalid.")
+        url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
+        requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
+
     def project_role(self, token: str, project_id: str) -> str | None:
         rows = self._data_request("GET", f"project_members?project_id=eq.{quote(project_id)}&select=role", token)
         return str(rows[0].get("role")) if isinstance(rows, list) and rows else None
+
+    def model_scan(self, token: str, project_id: str) -> dict[str, Any]:
+        files = self.list_ifc_files(token, project_id)
+        if not files:
+            return {"job": None, "warnings": []}
+        file = files[0]
+        jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at.desc&limit=1", token)
+        warnings = self._data_request("GET", f"model_scan_warnings?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at", token)
+        return {"file": file, "job": dict(jobs[0]) if isinstance(jobs, list) and jobs else None,
+                "warnings": warnings if isinstance(warnings, list) else []}
+
+    def retry_model_scan(self, token: str, project_id: str, file_id: str) -> str:
+        self.require_project_admin(token, project_id)
+        value = self._data_request("POST", "rpc/retry_reg38_ifc_job", token, json={"target_file": file_id})
+        return str(value)
 
     def require_project_admin(self, token: str, project_id: str) -> None:
         if self.project_role(token, project_id) not in {"OWNER", "ADMIN"}:

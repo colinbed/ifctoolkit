@@ -26,7 +26,7 @@
     } else if (state === "UPLOADING") {
       status.innerHTML = `<p><strong>Uploading IFC...</strong></p><div class="upload-progress"><i></i></div><span class="upload-percent" aria-label="Upload progress">Starting…</span>${details(selectedFile)}<div class="upload-actions"><button type="button" class="link remove-selection">Cancel</button></div>`;
     } else if (state === "UPLOADED") {
-      status.innerHTML = `<p><strong>✓ IFC uploaded</strong></p>${details(selectedFile)}<span>Status: Ready for model scan</span><div class="upload-actions"><button type="button" class="link replace-selection">Replace IFC</button><button type="button" class="link danger remove-uploaded">Remove</button></div>`;
+      status.innerHTML = `<p><strong>✓ IFC uploaded</strong></p>${details(selectedFile)}<span>Status: Queued for model scan</span><div class="upload-actions"><button type="button" class="link replace-selection">Replace IFC</button><button type="button" class="link danger remove-uploaded">Remove</button></div>`;
     } else if (state === "FAILED") {
       status.innerHTML = `<p><strong>Upload failed</strong></p><span>${escapeHtml(message || "We couldn't upload the IFC file.")}</span>${selectedFile ? details(selectedFile) : ""}<div class="upload-actions"><button type="button" class="button small retry-upload">Retry</button><button type="button" class="link replace-selection">Choose another file</button></div>`;
     } else status.replaceChildren();

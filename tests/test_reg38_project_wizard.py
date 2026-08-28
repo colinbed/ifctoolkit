@@ -39,7 +39,7 @@ def test_ifc_upload_is_signed_then_creates_file_and_job_after_storage_confirmati
     class Response:
         status_code = 200
         headers = {}
-        def json(self): return {"signedURL": "/object/upload/sign/reg38-evidence/path?token=signed"}
+        def json(self): return {"signedURL": "/object/upload/sign/project-files/path?token=signed"}
     def post(url, **kwargs): captured.update(url=url, **kwargs); return Response()
     monkeypatch.setattr(module.requests, "post", post)
     monkeypatch.setattr(module.requests, "head", lambda *args, **kwargs: Response())
@@ -49,11 +49,10 @@ def test_ifc_upload_is_signed_then_creates_file_and_job_after_storage_confirmati
     result = repo.finalize_ifc_upload("token", "user-id", "00000000-0000-4000-8000-000000000010",
                                       prepared["file_id"], "model.ifc", 13, prepared["storage_path"])
     assert result["storage_path"].startswith("projects/00000000-0000-4000-8000-000000000010/models/")
-    inserts = [call[2]["json"] for call in auth.calls if call[0] == "POST"]
-    assert inserts[0]["original_filename"] == "model.ifc"
-    assert inserts[0]["file_size"] == 13
-    assert inserts[1]["status"] == "QUEUED"
-    assert inserts[1]["progress_percent"] == 0
+    finalize = next(call[2]["json"] for call in auth.calls if "rpc/finalize_ifc_upload" in call[1])
+    assert finalize["original_name"] == "model.ifc"
+    assert finalize["object_size"] == 13
+    assert "/original/model.ifc" in finalize["object_path"]
 
 
 def test_storage_failure_does_not_create_processing_job(monkeypatch):
@@ -66,7 +65,7 @@ def test_storage_failure_does_not_create_processing_job(monkeypatch):
         Regulation38Repository(auth).finalize_ifc_upload(
             "token", "user", "00000000-0000-4000-8000-000000000010",
             "00000000-0000-4000-8000-000000000011", "model.ifc", 13,
-            "projects/00000000-0000-4000-8000-000000000010/models/00000000-0000-4000-8000-000000000011/model.ifc")
+            "projects/00000000-0000-4000-8000-000000000010/models/00000000-0000-4000-8000-000000000011/original/model.ifc")
     assert not any("ifc_processing_jobs" in call[1] and call[0] == "POST" for call in auth.calls)
 
 
@@ -110,3 +109,12 @@ def test_wizard_migration_allows_only_unprocessed_removal_and_private_storage_pa
     assert "status='queued'" in sql
     assert "not exists" in sql
     assert "split_part(object_name,'/',2)" in sql
+
+
+def test_project_files_migration_is_private_project_scoped_and_atomic():
+    sql = open("supabase/migrations/202608280008_project_files_and_model_scan.sql", encoding="utf-8").read().lower()
+    assert "'project-files', 'project-files', false, 524288000" in sql
+    assert "public.is_project_member(public.storage_project_id(name))" in sql
+    assert "public.can_edit_project(public.storage_project_id(name))" in sql
+    assert "models/%s/original/%s" in sql
+    assert "insert into public.ifc_files" in sql and "insert into public.ifc_processing_jobs" in sql
