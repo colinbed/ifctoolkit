@@ -34,12 +34,13 @@ def test_public_ctas_do_not_use_legacy_static_index():
     assert "/static/index.html" not in _public_template_text()
 
 
-def test_public_tools_overview_links_to_live_tool_routes():
+def test_public_tools_overview_does_not_link_to_internal_tool_routes():
     tools_template = (PUBLIC_TEMPLATE_DIR / "tools.html").read_text(encoding="utf-8")
 
     for route in LIVE_TOOL_LINKS:
-        assert f'href="{route}"' in tools_template
-    assert tools_template.count("Open tool →") >= len(LIVE_TOOL_LINKS)
+        assert f'href="{route}"' not in tools_template
+    assert 'href="/login"' in tools_template
+    assert 'href="/signup"' in tools_template
 
 
 def test_public_nav_resets_desktop_flex_direction_to_row():

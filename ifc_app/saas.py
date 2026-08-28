@@ -14,12 +14,14 @@ from ifc_app.supabase_auth import (
     clear_auth_session,
     get_auth_service,
     get_current_user,
+    get_account_profile,
     require_user,
     safe_next_url,
     session_from_auth_response,
     store_auth_session,
     user_display_name,
 )
+from ifc_app.entitlements import TOOL_REGISTRY, account_level, can_access_tool, has_account_level, trial_is_active, trial_summary
 
 
 LOGGER = logging.getLogger("ifc_app.auth.routes")
@@ -27,6 +29,9 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["auth_user"] = get_current_user
 templates.env.globals["user_display_name"] = user_display_name
+templates.env.globals["account_profile"] = get_account_profile
+templates.env.globals["has_account_level"] = has_account_level
+templates.env.globals["trial_is_active"] = trial_is_active
 
 
 REGULATION_38_SECTIONS = (
@@ -306,7 +311,9 @@ def logout(request: Request):
 
 
 def _dashboard_context(request: Request, user: dict[str, Any], **extra: Any) -> dict[str, Any]:
-    return {"request": request, "user": user, **extra}
+    profile = get_account_profile(request)
+    return {"request": request, "user": user, "profile": profile, "plan": account_level(profile),
+            "trial": trial_summary(profile), **extra}
 
 
 @router.get("/app", response_class=HTMLResponse)
@@ -352,7 +359,9 @@ def account(request: Request):
         context=_dashboard_context(
             request,
             user,
-            profile=profile,
+            profile=profile or {},
+            plan=account_level(profile),
+            trial=trial_summary(profile),
             display_name=user_display_name(user, profile),
             error=None,
             message=None,
@@ -435,7 +444,10 @@ def app_tools(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="saas/tools.html",
-        context=_dashboard_context(request, user),
+        context=_dashboard_context(
+            request, user,
+            tools=[{**tool, "id": tool_id, "available": can_access_tool(get_account_profile(request), tool_id)} for tool_id, tool in TOOL_REGISTRY.items() if tool["access"] != "hidden"],
+        ),
     )
 
 
@@ -468,4 +480,3 @@ def reports(request: Request):
             route="/app/reports",
         ),
     )
-

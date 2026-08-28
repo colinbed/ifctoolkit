@@ -9,6 +9,12 @@
     {% if message %}<p class="success" role="status">{{ message }}</p>{% endif %}
     <label>Name<input name="name" required autocomplete="name" value="{{ display_name }}"></label>
     <label>Email<input type="email" value="{{ user.email }}" disabled></label>
+    <div class="account-plan" aria-label="Plan and trial details">
+      <div><span>Plan</span><strong>{{ plan|title }}</strong></div>
+      <div><span>Trial</span><strong>{{ trial.label }}</strong></div>
+      <div><span>Trial ends</span><strong>{{ trial.ends_at.strftime('%-d %B %Y') if trial.ends_at else 'Not available' }}</strong></div>
+      <div><span>Days remaining</span><strong>{{ trial.days_remaining }} days</strong></div>
+    </div>
     <button class="button" type="submit">Save profile</button>
     <p class="fine">Name is stored in Supabase user metadata and, when present and permitted by RLS, the matching public.profiles row.</p>
   </form>

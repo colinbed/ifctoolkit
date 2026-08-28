@@ -9,6 +9,7 @@
   </head>
   <body>
     {% set user = auth_user(request) %}
+    {% set profile = account_profile(request) if user else {} %}
     <div class="app-shell">
       <header class="site-header">
         <div class="site-header-inner">
@@ -16,7 +17,7 @@
           <nav class="site-nav" aria-label="Primary navigation">
             {% if user %}
             <a class="nav-link nav-root-link" href="/app/projects">Projects</a>
-            <a class="nav-link nav-root-link" href="/app/regulation-38">Regulation 38</a>
+            {% if has_account_level(profile, 'premium') %}<a class="nav-link nav-root-link" href="/app/regulation-38">Regulation 38</a>{% endif %}
             {% else %}
             <a class="nav-link nav-root-link" href="/features">Features</a>
             <a class="nav-link nav-root-link" href="/tools">Tools</a>
@@ -46,16 +47,15 @@
                 <a class="nav-link nav-child {% if active=='ifc-qa' and qa_page=='config' %}active{% endif %}" href="/ifc-qa/config">Config</a>
               </div>
             </details>
-            <details class="nav-dropdown">
-              <summary class="nav-dropdown-summary">WIP <span class="nav-preview-badge">Preview</span></summary>
+            {% if has_account_level(profile, 'admin') %}<details class="nav-dropdown">
+              <summary class="nav-dropdown-summary">WIP <span class="nav-preview-badge">Internal</span></summary>
               <div class="nav-dropdown-menu">
                 <a class="nav-link nav-child {% if active=='ifc-move-rotate' %}active{% endif %}" href="/wip/ifc-move-rotate">IFC Move / Rotate</a>
                 <a class="nav-link nav-child {% if active=='step2ifc' %}active{% endif %}" href="/step2ifc">STEP to IFC</a>
                 <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">Model Checking</a>
               </div>
-            </details>
+            </details>{% endif %}
             <a class="nav-link nav-root-link {% if active=='files' %}active{% endif %}" href="/files">Reports</a>
-            <a class="nav-link nav-root-link" href="/">Public Site</a>
             <details class="nav-dropdown">
               <summary class="nav-dropdown-summary">Resources</summary>
               <div class="nav-dropdown-menu">
@@ -64,7 +64,7 @@
                 <a class="nav-link nav-child {% if active=='model-checking' %}active{% endif %}" href="/model-checking">Model Checking</a>
               </div>
             </details>
-            <a class="nav-link nav-root-link {% if active=='mappings' %}active{% endif %}" href="/admin/mappings">Settings</a>
+            {% if has_account_level(profile, 'admin') %}<a class="nav-link nav-root-link {% if active=='mappings' %}active{% endif %}" href="/admin/mappings">Settings</a>{% endif %}
             {% if user %}
             <a class="nav-link nav-root-link" href="/account">Account</a>
             <form class="nav-auth-form" action="/logout" method="post"><button class="nav-link nav-root-link" type="submit">Log out</button></form>

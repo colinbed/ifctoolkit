@@ -108,11 +108,13 @@ from backend.project_tables import get_tables_for_project_slug
 from ifc_app.saas import router as saas_router
 from ifc_app.supabase_auth import (
     AuthSessionMiddleware,
+    get_account_profile,
     get_current_user,
     missing_auth_environment,
     user_display_name,
     validate_auth_environment,
 )
+from ifc_app.entitlements import TOOL_REGISTRY, can_access_tool, has_account_level, trial_is_active
 
 try:
     import gc
@@ -6515,6 +6517,9 @@ templates.env.globals["asset_url"] = resolve_asset_url
 templates.env.globals["resolve_asset_url"] = resolve_asset_url
 templates.env.globals["frontend_build_id"] = FRONTEND_BUILD_ID
 templates.env.globals["auth_user"] = get_current_user
+templates.env.globals["account_profile"] = get_account_profile
+templates.env.globals["has_account_level"] = has_account_level
+templates.env.globals["trial_is_active"] = trial_is_active
 templates.env.globals["user_display_name"] = user_display_name
 
 
