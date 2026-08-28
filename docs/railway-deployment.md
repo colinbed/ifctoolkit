@@ -8,7 +8,7 @@ Railway is IFC Toolkit's primary production platform. Railway builds the root `D
 2. Select `colinbed/ifctoolkit` and the `main` branch. Railway uses `railway.json` and the root `Dockerfile`.
 3. Add the variables below. Values belong in Railway Variables, never in Git or an environment file.
 4. Generate a Railway domain. Set `APP_URL` to that HTTPS origin, without a trailing slash, and redeploy.
-5. In Supabase **Authentication → URL Configuration**, set Site URL to the same `APP_URL` and allow exactly `<APP_URL>/auth/callback`. This callback handles confirmation and password recovery. Add both the Railway and custom-domain callbacks during a domain transition.
+5. In Supabase **Authentication → URL Configuration**, set Site URL to the same `APP_URL`, then allow `<APP_URL>/auth/callback` for confirmation and `<APP_URL>/reset-password` for password recovery. Add both the Railway and custom-domain URLs during a domain transition.
 6. Verify `GET /health/live`, `/health/ready`, and `/health/build-info`, then test sign-up, confirmation, sign-in, reset, account access, and sign-out.
 7. To adopt a custom domain, configure it in Railway first, add its callback in Supabase, change `APP_URL`, and redeploy. DNS changes and retirement of Civo are separate operator actions.
 
