@@ -61,7 +61,7 @@ def test_seed_contains_canonical_17_sections_in_order():
 def test_project_create_validation_and_date_serialisation():
     with pytest.raises(ValueError, match="name"):
         ProjectCreate(name="  ").payload()
-    payload = ProjectCreate(name="  Riverside  ", planned_handover_date=date(2027, 4, 1)).payload()
+    payload = ProjectCreate(name="  Riverside  ", project_reference="RIV-1", planned_handover_date=date(2027, 4, 1)).payload()
     assert payload["name"] == "Riverside"
     assert payload["planned_handover_date"] == "2027-04-01"
 
@@ -79,7 +79,7 @@ def test_repository_uses_authenticated_rpc_and_rls_for_listing(monkeypatch):
             return [{"role": "OWNER", "projects": {"id": "project-id", "name": "Riverside", "project_reference": "RIV-1", "project_status": "DRAFT"}}]
 
     repository = Regulation38Repository(FakeAuth())
-    assert repository.create_project("user-token", ProjectCreate(name="Riverside")) == "project-id"
+    assert repository.create_project("user-token", ProjectCreate(name="Riverside", project_reference="RIV-1")) == "project-id"
     projects = repository.list_projects("user-token")
     assert projects[0].role == "OWNER"
     assert all(call[2]["access_token"] == "user-token" for call in calls)

@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -22,6 +22,7 @@ from ifc_app.supabase_auth import (
     user_display_name,
 )
 from ifc_app.entitlements import TOOL_REGISTRY, account_level, can_access_tool, has_account_level, trial_is_active, trial_summary
+from ifc_app.reg38_projects import REG38_DEFAULT_SECTIONS, ProjectCreate, Regulation38Repository
 
 
 LOGGER = logging.getLogger("ifc_app.auth.routes")
@@ -334,10 +335,21 @@ def projects(request: Request):
     user = _private_user(request)
     if isinstance(user, RedirectResponse):
         return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    project_rows, can_create, error = [], False, None
+    try:
+        repository = Regulation38Repository(get_auth_service())
+        project_rows = repository.list_projects(token)
+        can_create = repository.can_create_project(token)
+    except SupabaseAuthError as exc:
+        error = exc.public_message
+    except AttributeError:
+        # Keeps the page usable with deployments whose auth adapter predates Data REST.
+        error = "Project data is not available from this deployment yet."
     return templates.TemplateResponse(
         request=request,
         name="saas/projects.html",
-        context=_dashboard_context(request, user),
+        context=_dashboard_context(request, user, projects=project_rows, can_create=can_create, error=error),
     )
 
 
@@ -419,21 +431,117 @@ def update_account(request: Request, name: str = Form(...)):
 
 
 @router.get("/app/regulation-38", response_class=HTMLResponse)
-@router.get("/app/projects/{project_id}/regulation-38", response_class=HTMLResponse)
-def regulation_38(request: Request, project_id: str = ""):
+def regulation_38(request: Request):
+    return projects(request)
+
+
+WIZARD_STEPS = ("Project Details", "Regulation 38 Scope", "Upload IFC", "Model Scan", "Review Spaces & Zones",
+                "Review Fire Construction", "Generate Plans", "Configure Information Requirements", "Summary")
+
+
+def _wizard_response(request: Request, user: dict[str, Any], project: dict[str, Any] | None, step: int, **extra: Any):
+    values = {"project": project or {}, "project_id": (project or {}).get("id", ""), "step": step,
+              "steps": WIZARD_STEPS, "sections": [], "files": [], "error": None}
+    values.update(extra)
+    return templates.TemplateResponse(request=request, name="saas/reg38_wizard.html",
+        context=_dashboard_context(request, user, **values))
+
+
+@router.get("/app/projects/new", response_class=HTMLResponse)
+def new_reg38_project(request: Request):
     user = _private_user(request)
     if isinstance(user, RedirectResponse):
         return user
-    return templates.TemplateResponse(
-        request=request,
-        name="saas/regulation_38.html",
-        context=_dashboard_context(
-            request,
-            user,
-            project_id=project_id,
-            sections=REGULATION_38_SECTIONS,
-        ),
-    )
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        if not Regulation38Repository(get_auth_service()).can_create_project(token):
+            return HTMLResponse("Project creation is not permitted for this account.", status_code=403)
+    except SupabaseAuthError as exc:
+        return HTMLResponse(exc.public_message, status_code=exc.status_code)
+    return _wizard_response(request, user, {}, 1)
+
+
+@router.post("/app/projects/new")
+async def create_reg38_project(request: Request):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form()
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        repository = Regulation38Repository(get_auth_service())
+        if not repository.can_create_project(token):
+            return HTMLResponse("Project creation is not permitted for this account.", status_code=403)
+        project = ProjectCreate(**{key: (str(form.get(key) or "") or None) for key in ProjectCreate.__dataclass_fields__ if key not in {"project_status", "country"}},
+                                country=str(form.get("country") or "United Kingdom"))
+        project_id = repository.create_project(token, project)
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=2", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        message = str(exc) if isinstance(exc, ValueError) else exc.public_message
+        return _wizard_response(request, user, dict(form), 1, error=message)
+
+
+@router.get("/app/projects/{project_id}/regulation-38", response_class=HTMLResponse)
+def regulation_38_project(request: Request, project_id: str, step: int = 1):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        repo = Regulation38Repository(get_auth_service())
+        project = repo.get_project(token, project_id)
+        if not project: return HTMLResponse("Project not found.", status_code=404)
+        sections = repo.get_sections(token, project_id) if step == 2 else []
+        files = repo.list_ifc_files(token, project_id) if step == 3 else []
+        return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files)
+    except SupabaseAuthError as exc:
+        return HTMLResponse(exc.public_message, status_code=403 if exc.status_code in {401, 403} else exc.status_code)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/details")
+async def update_reg38_details(request: Request, project_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    values = {key: (str(form.get(key) or "") or None) for key in ProjectCreate.__dataclass_fields__ if key != "project_status"}
+    try:
+        ProjectCreate(**values).payload()
+        Regulation38Repository(get_auth_service()).update_project(token, project_id, values)
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=2", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        return _wizard_response(request, user, {"id": project_id, **values}, 1, error=str(exc) if isinstance(exc, ValueError) else exc.public_message)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/scope")
+async def update_reg38_scope(request: Request, project_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    enabled = {str(value) for value in form.getlist("sections")}
+    try:
+        Regulation38Repository(get_auth_service()).save_scope(token, project_id, str(form.get("scope_type") or "ENTIRE_BUILDING"), str(form.get("scope_detail") or ""), enabled)
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
+    except SupabaseAuthError as exc: return HTMLResponse(exc.public_message, status_code=exc.status_code)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/ifc")
+async def upload_reg38_ifc(request: Request, project_id: str, ifc_file: UploadFile):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    content = await ifc_file.read(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        Regulation38Repository(get_auth_service()).upload_ifc(token, str(user["id"]), project_id, ifc_file.filename or "", content)
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        repo = Regulation38Repository(get_auth_service()); project = repo.get_project(token, project_id)
+        return _wizard_response(request, user, project, 3, files=repo.list_ifc_files(token, project_id), error=str(exc) if isinstance(exc, ValueError) else exc.public_message)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/ifc/{file_id}/remove")
+async def remove_reg38_ifc(request: Request, project_id: str, file_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    Regulation38Repository(get_auth_service()).remove_ifc(token, file_id, str(form.get("storage_path") or ""))
+    return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
 
 
 @router.get("/app/tools", response_class=HTMLResponse)
