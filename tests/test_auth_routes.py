@@ -321,3 +321,64 @@ def test_mocked_supabase_login_private_navigation_and_logout(monkeypatch):
     after_logout = request("GET", "/app", headers={"cookie": cleared_cookie})
     assert after_logout.status_code == 303
     assert after_logout.header("location") == "/login?next=/app"
+
+
+class Regulation38AdminAuth(FakeSupabaseAuth):
+    settings = type("Settings", (), {"project_url": "https://example.supabase.co"})()
+    list_fails = False
+    projects = []
+
+    def _request_json(self, method, url, **kwargs):
+        if url.endswith("/rpc/can_create_project"):
+            return True
+        if "project_members?" in url:
+            if self.list_fails:
+                raise supabase_auth.SupabaseAuthError("Projects could not be loaded.", status_code=400, detail="projects.building_name does not exist")
+            return self.projects
+        if url.endswith("/rpc/reg38_schema_health"):
+            return {"valid": False, "missing": ["projects.building_name"]}
+        raise AssertionError(url)
+
+
+def _admin_cookie(monkeypatch, fake):
+    monkeypatch.setattr(saas, "get_auth_service", lambda: fake)
+    monkeypatch.setattr(supabase_auth, "get_auth_service", lambda: fake)
+    body = urlencode({"email": "member@example.com", "password": "correct horse battery staple", "next": "/app"}).encode()
+    response = request("POST", "/login", body=body, headers={"content-type": "application/x-www-form-urlencoded"})
+    return response.header("set-cookie").split(";", 1)[0]
+
+
+def test_admin_landing_keeps_create_action_when_project_list_fails(monkeypatch, caplog):
+    fake = Regulation38AdminAuth()
+    fake.list_fails = True
+    cookie = _admin_cookie(monkeypatch, fake)
+    response = request("GET", "/app/regulation-38", headers={"cookie": cookie})
+    assert response.status_code == 200
+    assert '+ New Project</a>' in response.text
+    assert "Active Projects" in response.text and response.text.count("—") >= 3
+    assert "You can still create a new project." in response.text
+    assert "No Regulation 38 projects yet" not in response.text
+    assert "projects.building_name" in caplog.text
+
+
+def test_admin_zero_projects_has_create_cta_and_direct_wizard_is_independent(monkeypatch):
+    fake = Regulation38AdminAuth()
+    cookie = _admin_cookie(monkeypatch, fake)
+    landing = request("GET", "/app/regulation-38", headers={"cookie": cookie})
+    assert "No Regulation 38 projects yet" in landing.text
+    assert '+ Create Project</a>' in landing.text
+    assert "Active Projects" in landing.text and ">0</strong>" in landing.text
+    direct = request("GET", "/app/regulation-38/projects/new", headers={"cookie": cookie})
+    assert direct.status_code == 200
+    assert "Project Details" in direct.text
+
+
+def test_member_cannot_see_create_or_open_direct_wizard(monkeypatch):
+    fake = Regulation38AdminAuth()
+    original = fake._request_json
+    fake._request_json = lambda method, url, **kwargs: False if url.endswith("/rpc/can_create_project") else original(method, url, **kwargs)
+    cookie = _admin_cookie(monkeypatch, fake)
+    landing = request("GET", "/app/regulation-38", headers={"cookie": cookie})
+    assert "+ New Project" not in landing.text and "+ Create Project" not in landing.text
+    assert "No Regulation 38 projects are currently assigned to you." in landing.text
+    assert request("GET", "/app/regulation-38/projects/new", headers={"cookie": cookie}).status_code == 403

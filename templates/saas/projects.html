@@ -1,17 +1,42 @@
 {% extends "saas/layout.html" %}
 {% block title %}Regulation 38 Projects · IFC Toolkit{% endblock %}
+{% macro new_project_button(label) -%}
+  {% if can_create %}<a class="button new-project-button" href="/app/regulation-38/projects/new">+ {{ label }}</a>{% endif %}
+{%- endmacro %}
 {% block content %}
 <section class="app-shell project-index">
-  <div class="page-heading"><div><span class="eyebrow">Projects</span><h1>Regulation 38</h1><p>Manage Regulation 38 fire-safety information across your projects.</p></div>
-  {% if can_create %}<a class="button" href="/app/regulation-38/projects/new">+ New Project</a>{% endif %}</div>
-  {% if error %}<div class="error"><strong>{{ error }}</strong> <a href="/app/regulation-38">Retry</a></div>{% endif %}
-  <p class="notice"><strong>Fire Safety Information:</strong> This workspace supports information collation and completeness review. It does not automatically demonstrate legal or regulatory compliance.</p>
-  <div class="project-table" role="table" aria-label="Regulation 38 projects">
-    <div class="project-row project-head" role="row"><b>Project</b><b>Building</b><b>Project reference</b><b>Planned handover</b><b>Progress</b><b>Status</b></div>
-    {% if not error %}{% for item in projects %}<a class="project-row" role="row" href="/app/projects/{{ item.id }}/regulation-38?step=1">
-      <strong>{{ item.name }}</strong><span>{{ item.building_name or '—' }}</span><span>{{ item.project_reference or '—' }}</span>
-      <span>{{ item.planned_handover_date or 'Not set' }}</span><span class="progress"><i></i><small>0%</small></span><span><em class="status status-{{ item.project_status|lower }}">{{ item.project_status|title }}</em></span>
-    </a>{% else %}<div class="empty-state"><strong>No Regulation 38 projects yet</strong><p>{% if can_create %}Create your first project to begin collecting and reviewing Regulation 38 fire-safety information.</p><a class="button" href="/app/regulation-38/projects/new">Create New Project</a>{% else %}Projects assigned to you will appear here.</p>{% endif %}</div>{% endfor %}{% endif %}
+  <div class="page-heading reg38-heading">
+    <div><span class="eyebrow">Projects</span><h1>Regulation 38</h1><p>Create, configure and manage Regulation 38 fire-safety information workspaces.</p></div>
+    {{ new_project_button('New Project') }}
   </div>
+  <div class="reg38-summary" aria-label="Project summary">
+    {% set available = not list_error %}
+    <article><span>Active Projects</span><strong>{{ projects|selectattr('project_status', 'equalto', 'ACTIVE')|list|length if available else '—' }}</strong></article>
+    <article><span>Draft Projects</span><strong>{{ projects|selectattr('project_status', 'equalto', 'DRAFT')|list|length if available else '—' }}</strong></article>
+    <article><span>Awaiting Review</span><strong>{{ projects|selectattr('awaiting_review')|list|length if available else '—' }}</strong></article>
+  </div>
+  <p class="notice"><strong>Fire Safety Information:</strong> This workspace supports information collation and completeness review. It does not automatically demonstrate legal or regulatory compliance.</p>
+  <section class="project-list-area">
+    <h2>Regulation 38 Projects</h2>
+    {% if list_error %}
+      <div class="project-load-error" role="alert"><strong>Projects could not be loaded.</strong><p>We couldn't retrieve the project list.{% if can_create %} You can still create a new project.{% endif %}</p><a class="button ghost" href="/app/regulation-38">Retry</a></div>
+    {% elif not projects %}
+      <div class="project-table empty-state"><strong>No Regulation 38 projects yet</strong>
+        {% if can_create %}<p>Create your first project to define its Regulation 38 scope,<br>upload an IFC and generate the project workspace.</p>{{ new_project_button('Create Project') }}
+        {% else %}<p>No Regulation 38 projects are currently assigned to you.</p>{% endif %}
+      </div>
+    {% else %}
+      <div class="project-toolbar"><label>Search projects<input id="project-search" type="search" placeholder="Search projects"></label><div class="project-filters" aria-label="Project status filters"><button class="active" data-status="ALL">All</button><button data-status="DRAFT">Draft</button><button data-status="ACTIVE">Active</button><button data-status="REVIEW">Review Required</button><button data-status="ARCHIVED">Archived</button></div></div>
+      <div class="project-table" role="table" aria-label="Regulation 38 projects">
+        <div class="project-row project-head" role="row"><b>Project</b><b>Building</b><b>Project reference</b><b>Planned handover</b><b>Progress</b><b>Status</b></div>
+        {% for item in projects %}<a class="project-row" role="row" data-search="{{ item.name }} {{ item.building_name or '' }} {{ item.project_reference or '' }}" data-status="{{ 'ARCHIVED' if item.archived_at else ('REVIEW' if item.awaiting_review else item.project_status) }}" href="/app/projects/{{ item.id }}/regulation-38?step=1">
+          <strong>{{ item.name }}</strong><span>{{ item.building_name or '—' }}</span><span>{{ item.project_reference or '—' }}</span><span>{{ item.planned_handover_date or 'Not set' }}</span><span class="progress"><i></i><small>0%</small></span><span><em class="status status-{{ item.project_status|lower }}">{{ item.project_status|title }}</em></span>
+        </a>{% endfor %}
+      </div>
+    {% endif %}
+  </section>
 </section>
+{% if projects and not list_error %}<script>
+(() => { const search=document.querySelector('#project-search'), rows=[...document.querySelectorAll('.project-row[data-status]')], buttons=[...document.querySelectorAll('.project-filters button')]; let status='ALL'; const apply=()=>rows.forEach(row=>row.hidden=!row.dataset.search.toLowerCase().includes(search.value.toLowerCase())||(status!=='ALL'&&row.dataset.status!==status)); search.addEventListener('input',apply); buttons.forEach(button=>button.addEventListener('click',()=>{status=button.dataset.status;buttons.forEach(x=>x.classList.toggle('active',x===button));apply()})); })();
+</script>{% endif %}
 {% endblock %}
