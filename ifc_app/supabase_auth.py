@@ -17,7 +17,7 @@ import requests
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ifc_app.entitlements import can_access_tool, has_account_level
+from ifc_app.entitlements import can_access_tool, has_account_level, tool_for_path
 
 
 LOGGER = logging.getLogger("ifc_app.auth")
@@ -531,23 +531,12 @@ def _route_requirement(path: str) -> tuple[str, str] | None:
     public = ("/static/", "/health", "/login", "/signup", "/forgot-password", "/reset-password", "/auth/", "/features", "/help", "/resources", "/documentation", "/pricing", "/compliance", "/about", "/contact")
     if path in {"/", "/tools", "/api/upload/limits"} or path.startswith(public):
         return None
-    if path.startswith("/app/regulation-38") or (path.startswith("/app/projects/") and path.endswith("/regulation-38")):
-        return ("level", "premium")
-    if path.startswith(("/wip/", "/step2ifc", "/model-checking", "/admin/")) or "/ifc-move-rotate" in path or path.startswith("/api/checks/"):
+    if (path.startswith(("/wip/", "/step2ifc", "/model-checking", "/admin/", "/api/checks/"))
+            or any(segment in path for segment in ("/ifc-move-rotate", "/step2ifc/", "/checks/"))):
         return ("level", "admin")
-    if path.startswith("/tools/cobieqc") or path.startswith("/api/tools/cobieqc"):
-        return ("tool", "cobie_qc")
-    if path.startswith("/tools/cobie-qa") or path.startswith("/api/cobie/"):
-        return ("tool", "cobie_qa")
-    tool_paths = {
-        "/excel": "ifc_to_excel", "/cleaner": "pset_purge", "/storeys": "storey_global_z",
-        "/levels": "storey_global_z", "/proxy": "proxy_to_ifcclass", "/presentation-layer": "presentation_layer",
-        "/ifc-qa": "ifc_data_qa", "/data-extractor": "ifc_data_qa", "/tools/reduce-file-size": "file_reduction",
-        "/tools/purge-area-spaces": "area_space_purge",
-    }
-    for prefix, tool_id in tool_paths.items():
-        if path.startswith(prefix):
-            return ("tool", tool_id)
+    tool_id = tool_for_path(path)
+    if tool_id:
+        return ("tool", tool_id)
     # Remaining application pages and processing APIs are authenticated Standard access.
     if path.startswith(("/app", "/api/", "/legacy/", "/files", "/viewer")):
         return ("level", "standard")

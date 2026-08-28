@@ -3,26 +3,36 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import math
+import re
 from typing import Any, Mapping
 
 ACCOUNT_LEVELS = ("standard", "premium", "admin")
 
 # This registry is the single source of truth used by route enforcement and cards.
-TOOL_REGISTRY: dict[str, dict[str, str]] = {
-    "ifc_to_excel": {"name": "IFC to Excel", "path": "/excel", "access": "standard", "description": "Extract, edit and round-trip IFC data with Excel."},
-    "pset_purge": {"name": "Pset Purge", "path": "/cleaner", "access": "standard", "description": "Remove unwanted property sets and loose properties."},
-    "storey_global_z": {"name": "Storey & Global Z Control", "path": "/storeys", "access": "standard", "description": "Review and update storeys, levels and elevations."},
-    "proxy_to_ifcclass": {"name": "Proxy to IFCClass", "path": "/proxy", "access": "standard", "description": "Remap proxy objects into appropriate IFC classes."},
-    "presentation_layer": {"name": "Presentation Layer Alignment", "path": "/presentation-layer", "access": "standard", "description": "Review and align model presentation layers."},
-    "file_reduction": {"name": "IFC File Size Reducer", "path": "/tools/reduce-file-size", "access": "standard", "description": "Analyse and reduce IFC model file size."},
-    "area_space_purge": {"name": "Purge Area Spaces", "path": "/tools/purge-area-spaces", "access": "standard", "description": "Find and remove unwanted area space entities."},
-    "ifc_data_qa": {"name": "IFC Data QA", "path": "/ifc-qa/extractor", "access": "standard", "description": "Extract and validate structured IFC information."},
-    "cobie_qc": {"name": "COBie QC", "path": "/tools/cobieqc", "access": "premium", "description": "Run detailed COBie quality and completeness checks."},
-    "cobie_qa": {"name": "COBie QA / QC", "path": "/tools/cobie-qa", "access": "premium", "description": "Validate workbooks and export issue reports."},
+TOOL_REGISTRY: dict[str, dict[str, Any]] = {
+    "ifc_to_excel": {"name": "IFC to Excel", "path": "/excel", "access": "premium", "description": "Extract, edit and round-trip IFC data with Excel.", "route_patterns": (r"/excel(?:/.*)?", r"/api/excel(?:/.*)?", r"/api/session/[^/]+/excel(?:/.*)?")},
+    "pset_purge": {"name": "Pset Purge", "path": "/cleaner", "access": "premium", "description": "Remove unwanted property sets and loose properties.", "route_patterns": (r"/cleaner", r"/api/session/[^/]+/clean")},
+    "storey_global_z": {"name": "Storey & Global Z Control", "path": "/storeys", "access": "premium", "description": "Review and update storeys, levels and elevations.", "route_patterns": (r"/(?:storeys|levels)", r"/api/session/[^/]+/(?:storeys|levels)(?:/.*)?")},
+    "proxy_to_ifcclass": {"name": "Proxy to IFCClass", "path": "/proxy", "access": "premium", "description": "Remap proxy objects into appropriate IFC classes.", "route_patterns": (r"/proxy", r"/api/session/[^/]+/proxy(?:/.*)?")},
+    "presentation_layer": {"name": "Presentation Layer Alignment", "path": "/presentation-layer", "access": "premium", "description": "Review and align model presentation layers.", "route_patterns": (r"/presentation-layer", r"/api/presentation-layers(?:/.*)?", r"/api/session/[^/]+/presentation-layer(?:/.*)?")},
+    "file_reduction": {"name": "IFC File Size Reducer", "path": "/tools/reduce-file-size", "access": "premium", "description": "Analyse and reduce IFC model file size.", "route_patterns": (r"/tools/reduce-file-size", r"/api/ifc-tools/reduce-file-size(?:/.*)?")},
+    "area_space_purge": {"name": "Purge Area Spaces", "path": "/tools/purge-area-spaces", "access": "premium", "description": "Find and remove unwanted area space entities.", "route_patterns": (r"/tools/purge-area-spaces", r"/api/ifc/area-spaces(?:/.*)?")},
+    "ifc_data_qa": {"name": "IFC Data QA", "path": "/ifc-qa/extractor", "access": "premium", "description": "Extract and validate structured IFC information.", "route_patterns": (r"/(?:ifc-qa|data-extractor)(?:/.*)?", r"/api/(?:ifc-qa|ifc-data-qa)(?:/.*)?", r"/api/session/[^/]+/(?:ifc-qa|data-extractor)(?:/.*)?", r"/api/session/[^/]+/download", r"/api/ifc/jobs(?:/.*)?", r"/api/extract")},
+    "cobie_qc": {"name": "COBie QC", "path": "/tools/cobieqc", "access": "premium", "description": "Run detailed COBie quality and completeness checks.", "route_patterns": (r"/tools/cobieqc", r"/api/tools/cobieqc(?:/.*)?")},
+    "cobie_qa": {"name": "COBie QA / QC", "path": "/tools/cobie-qa", "access": "premium", "description": "Validate workbooks and export issue reports.", "route_patterns": (r"/tools/cobie-qa", r"/api/cobie(?:/.*)?")},
+    "regulation_38": {"name": "Regulation 38", "path": "/app/regulation-38", "access": "premium", "description": "Prepare structured fire-safety handover information.", "route_patterns": (r"/app/regulation-38", r"/app/projects/[^/]+/regulation-38")},
     "ifc_move_rotate": {"name": "IFC Move / Rotate", "path": "/wip/ifc-move-rotate", "access": "admin", "description": "Internal coordinate transformation workflow."},
     "step_to_ifc": {"name": "STEP to IFC", "path": "/step2ifc", "access": "admin", "description": "Internal STEP conversion workflow."},
     "model_checking": {"name": "Model Checking", "path": "/model-checking", "access": "admin", "description": "Internal model checking configuration."},
 }
+
+
+def tool_for_path(path: str) -> str | None:
+    """Return the registry tool owning a page or processing endpoint."""
+    for tool_id, tool in TOOL_REGISTRY.items():
+        if any(re.fullmatch(pattern, path) for pattern in tool.get("route_patterns", ())):
+            return tool_id
+    return None
 
 
 def _date(value: Any) -> datetime | None:
