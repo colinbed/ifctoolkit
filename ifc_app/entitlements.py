@@ -10,7 +10,7 @@ ACCOUNT_LEVELS = ("standard", "premium", "admin")
 
 # This registry is the single source of truth used by route enforcement and cards.
 TOOL_REGISTRY: dict[str, dict[str, Any]] = {
-    "ifc_to_excel": {"name": "IFC to Excel", "path": "/excel", "access": "premium", "description": "Extract, edit and round-trip IFC data with Excel.", "route_patterns": (r"/excel(?:/.*)?", r"/api/excel(?:/.*)?", r"/api/session/[^/]+/excel(?:/.*)?")},
+    "ifc_to_excel": {"name": "IFC to Excel", "path": "/excel", "access": "premium", "description": "Extract, edit and round-trip IFC data with Excel.", "route_patterns": (r"/excel(?:/.*)?", r"/api/excel(?:/.*)?", r"/api/session/[^/]+/excel(?:/.*)?", r"/api/jobs/[^/]+")},
     "pset_purge": {"name": "Pset Purge", "path": "/cleaner", "access": "premium", "description": "Remove unwanted property sets and loose properties.", "route_patterns": (r"/cleaner", r"/api/session/[^/]+/clean")},
     "storey_global_z": {"name": "Storey & Global Z Control", "path": "/storeys", "access": "premium", "description": "Review and update storeys, levels and elevations.", "route_patterns": (r"/(?:storeys|levels)", r"/api/session/[^/]+/(?:storeys|levels)(?:/.*)?")},
     "proxy_to_ifcclass": {"name": "Proxy to IFCClass", "path": "/proxy", "access": "premium", "description": "Remap proxy objects into appropriate IFC classes.", "route_patterns": (r"/proxy", r"/api/session/[^/]+/proxy(?:/.*)?")},

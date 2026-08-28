@@ -1541,16 +1541,10 @@ async function extractExcel() {
       body: JSON.stringify(payload),
     });
     const data = await resp.json();
-    if (data.excel) {
-      const timings = data.timings_ms ? JSON.stringify(data.timings_ms) : "";
-      const counts = data.counts ? JSON.stringify(data.counts) : "";
-      const schemaMeta = data.schema_detected ? ` | schema: ${data.schema_detected}` : "";
-      const warning = data.schema_warning ? ` | warning: ${data.schema_warning}` : "";
-      el("excelStatus").textContent = `Excel ready: ${data.excel.name}${schemaMeta}${warning}${timings ? ` | timings(ms): ${timings}` : ""}${counts ? ` | counts: ${counts}` : ""}`;
-      await refreshFiles();
-    } else {
-      el("excelStatus").textContent = JSON.stringify(data);
-    }
+    if (!resp.ok || !data.job_id) throw new Error(data.detail?.message || data.detail || "Could not start extraction");
+    const job = await pollExcelJob(data.job_id, "extract");
+    el("excelStatus").textContent = `Complete — Excel ready: ${job.output_file_id}`;
+    await refreshFiles();
   });
 }
 
@@ -1633,16 +1627,35 @@ async function applyExcel() {
       body: JSON.stringify(payload),
     });
     const data = await resp.json();
-    if (data.ifc) {
-      state.updatedIfcName = data.ifc.name;
-      el("excelStatus").textContent = `Updated IFC: ${data.ifc.name}`;
-      if (downloadUpdatedBtn) downloadUpdatedBtn.classList.remove("hidden");
-      await refreshFiles();
-    } else {
-      state.updatedIfcName = null;
-      el("excelStatus").textContent = JSON.stringify(data);
-    }
+    if (!resp.ok || !data.job_id) throw new Error(data.detail?.message || data.detail || "Could not start IFC update");
+    const job = await pollExcelJob(data.job_id, "update");
+    state.updatedIfcName = job.output_file_id;
+    el("excelStatus").textContent = `Complete — Updated IFC: ${job.output_file_id}`;
+    if (downloadUpdatedBtn) downloadUpdatedBtn.classList.remove("hidden");
+    await refreshFiles();
   });
+}
+
+async function pollExcelJob(jobId, kind) {
+  const stages = kind === "extract"
+    ? ["Preparing model...", "Reading IFC...", "Extracting entities...", "Extracting properties...", "Building workbook...", "Finalising..."]
+    : ["Preparing model...", "Reading IFC...", "Reading workbook...", "Applying updates...", "Writing IFC...", "Finalising..."];
+  let tick = 0;
+  while (true) {
+    const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const job = await resp.json();
+    if (!resp.ok) throw new Error(job.detail || "Could not read processing status");
+    if (job.status === "completed") return job;
+    if (job.status === "failed") {
+      const retry = job.recoverable ? " You can retry." : "";
+      const message = `${job.message || job.error || "Processing failed."}${retry}`;
+      el("excelStatus").textContent = message;
+      throw new Error(message);
+    }
+    el("excelStatus").textContent = job.status === "queued" ? stages[0] : stages[Math.min(1 + Math.floor(tick / 2), stages.length - 1)];
+    tick += 1;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
 }
 
 async function parseStoreyInfo() {
