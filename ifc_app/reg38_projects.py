@@ -71,6 +71,16 @@ class ProjectSummary:
     building_name: str | None = None
     building_type: str | None = None
     planned_handover_date: str | None = None
+    archived_at: str | None = None
+    awaiting_review: bool = False
+
+
+@dataclass(frozen=True)
+class CreateProjectPermission:
+    """A permission result which cannot confuse an RPC outage with a denial."""
+    allowed: bool
+    source: str
+    check_failed: bool = False
 
 
 def validate_ifc(filename: str, size: int) -> None:
@@ -95,6 +105,21 @@ class Regulation38Repository:
     def can_create_project(self, token: str) -> bool:
         return self._data_request("POST", "rpc/can_create_project", token, json={}) is True
 
+    def is_platform_admin(self, token: str) -> bool:
+        return self._data_request("POST", "rpc/is_platform_admin", token, json={}) is True
+
+    def resolve_create_permission(self, token: str) -> CreateProjectPermission:
+        """Check permission, retaining capability only through a verified admin fallback."""
+        try:
+            return CreateProjectPermission(self.can_create_project(token), "can_create_project")
+        except SupabaseAuthError as permission_error:
+            try:
+                if self.is_platform_admin(token):
+                    return CreateProjectPermission(True, "is_platform_admin", check_failed=True)
+            except SupabaseAuthError:
+                pass
+            raise permission_error
+
     def create_project(self, token: str, project: ProjectCreate) -> str:
         result = self._data_request("POST", "rpc/create_reg38_project", token, json={"project_data": project.payload()})
         if not isinstance(result, str) or not result:
@@ -102,15 +127,22 @@ class Regulation38Repository:
         return result
 
     def list_projects(self, token: str) -> list[ProjectSummary]:
-        select = "role,projects(id,name,building_name,project_reference,project_status,building_type,planned_handover_date)"
+        select = "role,projects(id,name,building_name,project_reference,project_status,building_type,planned_handover_date,archived_at,reg38_sections(completion_status))"
         rows = self._data_request("GET", f"project_members?select={select}&order=created_at.desc", token)
         output = []
         for row in rows if isinstance(rows, list) else []:
             project = row.get("projects") if isinstance(row, Mapping) else None
             if isinstance(project, Mapping):
+                sections = project.get("reg38_sections") or []
                 output.append(ProjectSummary(str(project["id"]), str(project["name"]), project.get("project_reference"),
-                    str(project["project_status"]), str(row["role"]), project.get("building_name"), project.get("building_type"), project.get("planned_handover_date")))
+                    str(project["project_status"]), str(row["role"]), project.get("building_name"), project.get("building_type"),
+                    project.get("planned_handover_date"), project.get("archived_at"),
+                    any(section.get("completion_status") == "REVIEW_REQUIRED" for section in sections if isinstance(section, Mapping))))
         return output
+
+    def schema_health(self, token: str) -> dict[str, Any]:
+        result = self._data_request("POST", "rpc/reg38_schema_health", token, json={})
+        return dict(result) if isinstance(result, Mapping) else {"valid": False, "unexpected_response": True}
 
     def get_project(self, token: str, project_id: str) -> dict[str, Any] | None:
         rows = self._data_request("GET", f"projects?id=eq.{quote(project_id)}&select=*", token)

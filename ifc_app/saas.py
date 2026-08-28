@@ -336,21 +336,35 @@ def projects(request: Request):
     if isinstance(user, RedirectResponse):
         return user
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    project_rows, can_create, error = [], False, None
+    project_rows, can_create, list_error, permission_error = [], False, None, False
+    repository = Regulation38Repository(get_auth_service())
     try:
-        repository = Regulation38Repository(get_auth_service())
+        permission = repository.resolve_create_permission(token)
+        can_create = permission.allowed
+        if permission.check_failed:
+            LOGGER.warning("can_create_project RPC failed; creation retained through verified is_platform_admin")
+    except (SupabaseAuthError, AttributeError) as exc:
+        permission_error = True
+        detail = (exc.detail or exc.public_message) if isinstance(exc, SupabaseAuthError) else str(exc)
+        LOGGER.error("Regulation 38 create-permission check failed: %s", detail)
+    try:
         project_rows = repository.list_projects(token)
-        can_create = repository.can_create_project(token)
     except SupabaseAuthError as exc:
         LOGGER.error("Regulation 38 project list failed: %s", exc.detail or exc.public_message)
-        error = "Projects could not be loaded."
-    except AttributeError:
+        list_error = True
+        try:
+            LOGGER.error("Regulation 38 schema health: %s", repository.schema_health(token))
+        except Exception as health_exc:
+            LOGGER.error("Regulation 38 schema health check unavailable: %s", health_exc)
+    except AttributeError as exc:
         # Keeps the page usable with deployments whose auth adapter predates Data REST.
-        error = "Project data is not available from this deployment yet."
+        LOGGER.error("Regulation 38 project adapter unavailable: %s", exc)
+        list_error = True
     return templates.TemplateResponse(
         request=request,
         name="saas/projects.html",
-        context=_dashboard_context(request, user, projects=project_rows, can_create=can_create, error=error),
+        context=_dashboard_context(request, user, projects=project_rows, can_create=can_create,
+            list_error=list_error, permission_error=permission_error),
     )
 
 
@@ -456,7 +470,7 @@ def new_reg38_project(request: Request):
         return user
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     try:
-        if not Regulation38Repository(get_auth_service()).can_create_project(token):
+        if not Regulation38Repository(get_auth_service()).resolve_create_permission(token).allowed:
             return HTMLResponse("Project creation is not permitted for this account.", status_code=403)
     except SupabaseAuthError as exc:
         return HTMLResponse(exc.public_message, status_code=exc.status_code)
@@ -472,7 +486,7 @@ async def create_reg38_project(request: Request):
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     try:
         repository = Regulation38Repository(get_auth_service())
-        if not repository.can_create_project(token):
+        if not repository.resolve_create_permission(token).allowed:
             return HTMLResponse("Project creation is not permitted for this account.", status_code=403)
         project = ProjectCreate(**{key: (str(form.get(key) or "") or None) for key in ProjectCreate.__dataclass_fields__ if key not in {"project_status", "country"}},
                                 country=str(form.get("country") or "United Kingdom"))

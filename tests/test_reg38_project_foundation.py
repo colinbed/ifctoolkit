@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ifc_app.reg38_projects import ProjectCreate, REG38_DEFAULT_SECTIONS, Regulation38Repository
+from ifc_app.supabase_auth import SupabaseAuthError
 
 MIGRATION = Path("supabase/migrations/202608280002_reg38_project_foundation.sql")
 
@@ -84,3 +85,41 @@ def test_repository_uses_authenticated_rpc_and_rls_for_listing(monkeypatch):
     assert projects[0].role == "OWNER"
     assert all(call[2]["access_token"] == "user-token" for call in calls)
     assert calls[0][1].endswith("/rest/v1/rpc/create_reg38_project")
+
+
+def test_permission_rpc_failure_is_not_a_denial_and_verified_super_admin_survives():
+    class AdminAuth:
+        settings = type("Settings", (), {"project_url": "https://example.supabase.co"})()
+        def _request_json(self, method, url, **kwargs):
+            if url.endswith("/rpc/can_create_project"):
+                raise SupabaseAuthError("Permission unavailable", status_code=503, detail="function missing")
+            if url.endswith("/rpc/is_platform_admin"):
+                return True
+            raise AssertionError(url)
+
+    permission = Regulation38Repository(AdminAuth()).resolve_create_permission("token")
+    assert permission.allowed is True
+    assert permission.check_failed is True
+    assert permission.source == "is_platform_admin"
+
+
+def test_permission_rpc_failure_without_admin_fallback_raises():
+    class MemberAuth:
+        settings = type("Settings", (), {"project_url": "https://example.supabase.co"})()
+        def _request_json(self, method, url, **kwargs):
+            if url.endswith("/rpc/can_create_project"):
+                raise SupabaseAuthError("Permission unavailable", status_code=503, detail="timeout")
+            return False
+
+    with pytest.raises(SupabaseAuthError, match="timeout"):
+        Regulation38Repository(MemberAuth()).resolve_create_permission("token")
+
+
+def test_security_migration_separates_roles_and_checks_schema():
+    text = Path("supabase/migrations/202608280006_reg38_admin_permissions.sql").read_text(encoding="utf-8").lower()
+    assert "security_role = 'super_admin'" in text
+    assert "security_role = 'admin' and can_create_projects" in text
+    can_create_body = text.split("create or replace function public.can_create_project()", 1)[1].split("$$;", 1)[0]
+    assert "account_level" not in can_create_body
+    for required in ("projects", "project_members", "reg38_sections", "reg38_project_scope", "ifc_files", "ifc_processing_jobs"):
+        assert f"('{required}'" in text
