@@ -84,6 +84,7 @@ from backend.ifc_qa.config_loader import (
     validate_config_structure,
 )
 from backend.ifc_jobs import create_job as create_ifc_job, get_job as get_ifc_job, update_job as update_ifc_job
+from backend.excel_jobs import ExcelJobStore
 from backend.ifc_file_size_reducer import (
     IfcFileSizeReducerError,
     analyze_ifc_file,
@@ -476,6 +477,7 @@ IFC_QA_JOBS: Dict[str, Dict[str, Any]] = {}
 COBIEQC_JOB_STORE = CobieQcJobStore()
 COBIE_QA_JOBS: Dict[str, Dict[str, Any]] = {}
 EXCEL_SCAN_CACHE: Dict[str, Dict[str, Any]] = {}
+EXCEL_JOBS = ExcelJobStore(APP_TEMP_ROOT / "excel-jobs", max_workers=int(os.getenv("EXCEL_JOB_WORKERS", "1")))
 
 
 # ----------------------------------------------------------------------------
@@ -6400,12 +6402,11 @@ def startup_cleanup() -> None:
     COBIEQC_JOB_STORE.cleanup_old_jobs()
     host, port = resolve_server_host_port()
     APP_LOGGER.info("Startup network binding host=%s port=%s", host, port)
-    bootstrap_cobieqc_assets()
     runtime_diag = get_cobieqc_runtime_diagnostics()
     engine = get_cobieqc_engine()
     java_xmx_mb = os.getenv("COBIEQC_JAVA_XMX_MB", "512")
     APP_LOGGER.info(
-        "COBieQC startup health engine=%s enabled=%s jar_exists=%s resource_dir_exists=%s jar_path=%s resource_dir=%s java_xmx_mb=%s xml_count=%s xsl_count=%s",
+        "COBieQC startup health (initialisation deferred until tool use) engine=%s enabled=%s jar_exists=%s resource_dir_exists=%s jar_path=%s resource_dir=%s java_xmx_mb=%s xml_count=%s xsl_count=%s",
         engine,
         runtime_diag["enabled"],
         runtime_diag["jar_exists"],
@@ -7598,6 +7599,9 @@ async def cobieqc_run(
     stage: str = Form("D"),
 ):
     assert_heavy_capacity("/api/tools/cobieqc/run")
+    # COBieQC asset validation/restoration is intentionally tool-specific; it
+    # must never delay ASGI startup or the Railway liveness probe.
+    bootstrap_cobieqc_assets()
     runtime_diag = get_cobieqc_runtime_diagnostics()
     if not runtime_diag["enabled"]:
         raise HTTPException(
@@ -8536,7 +8540,7 @@ def run_cleaner(session_id: str, payload: Dict[str, Any] = Body(...)):
     return {"reports": reports, "outputs": outputs}
 
 
-@app.post("/api/session/{session_id}/excel/extract")
+@app.post("/api/session/{session_id}/excel/extract", status_code=202)
 def excel_extract(session_id: str, payload: Dict[str, Any] = Body(...)):
     root = SESSION_STORE.ensure(session_id)
     source = payload.get("ifc_file")
@@ -8555,16 +8559,14 @@ def excel_extract(session_id: str, payload: Dict[str, Any] = Body(...)):
         plan_payload = dict(plan_payload or {})
         if "cobie_pairs" not in plan_payload and cached_preview.get("cobie_pairs"):
             plan_payload["cobie_pairs"] = [f"{item.get('pset')}.{item.get('property')}" for item in cached_preview.get("cobie_pairs", [])]
-    with single_flight_heavy_job("/api/session/{session_id}/excel/extract"):
-        result = extract_to_excel(in_path, out_path, plan_payload=plan_payload)
-    APP_LOGGER.info("excel_extract timings_ms=%s counts=%s source=%s", result.get("timings_ms", {}), result.get("counts", {}), source)
-    return {
-        "excel": {"name": out_name, "url": f"/api/session/{session_id}/download?name={out_name}"},
-        "timings_ms": result.get("timings_ms", {}),
-        "counts": result.get("counts", {}),
-        "schema_detected": result.get("schema_detected"),
-        "schema_warning": result.get("schema_warning", ""),
-    }
+    job = EXCEL_JOBS.create(
+        kind="extract", session_id=session_id, input_filename=sanitize_filename(source),
+        input_size=os.path.getsize(in_path),
+        spec={"kind": "extract", "session_id": session_id, "input_filename": sanitize_filename(source),
+              "input_size": os.path.getsize(in_path), "input_path": in_path, "output_path": out_path,
+              "plan": plan_payload},
+    )
+    return {key: job[key] for key in ("job_id", "status", "progress", "message")}
 
 
 @app.post("/api/session/{session_id}/excel/scan")
@@ -8584,9 +8586,8 @@ def excel_scan(session_id: str, payload: Dict[str, Any] = Body(...)):
     return {"preview": preview}
 
 
-@app.post("/api/session/{session_id}/excel/update")
+@app.post("/api/session/{session_id}/excel/update", status_code=202)
 def excel_apply(session_id: str, payload: Dict[str, Any] = Body(...)):
-    started_at = time.monotonic()
     root = SESSION_STORE.ensure(session_id)
     ifc_name = payload.get("ifc_file")
     excel_name = payload.get("excel_file")
@@ -8601,23 +8602,25 @@ def excel_apply(session_id: str, payload: Dict[str, Any] = Body(...)):
     base = os.path.splitext(os.path.basename(in_path))[0]
     out_name = f"{base}_updated.ifc"
     out_path = os.path.join(root, out_name)
-    with single_flight_heavy_job("/api/session/{session_id}/excel/update"):
-        try:
-            update_ifc_from_excel(
-                in_path,
-                xls_path,
-                out_path,
-                update_mode=payload.get("update_mode", "update"),
-                add_new=payload.get("add_new", "no"),
-                session_id=session_id,
-                endpoint="/api/session/{session_id}/excel/update",
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except TimeoutError as exc:
-            raise HTTPException(status_code=408, detail=str(exc)) from exc
-    log_memory_stage(stage="response complete", session_id=session_id, file_name=out_name, file_size=os.path.getsize(out_path), endpoint="/api/session/{session_id}/excel/update", started_at=started_at)
-    return {"ifc": {"name": out_name, "url": f"/api/session/{session_id}/download?name={out_name}"}}
+    job = EXCEL_JOBS.create(
+        kind="update", session_id=session_id, input_filename=sanitize_filename(ifc_name),
+        input_size=os.path.getsize(in_path),
+        spec={"kind": "update", "session_id": session_id, "input_filename": sanitize_filename(ifc_name),
+              "input_size": os.path.getsize(in_path), "input_path": in_path, "excel_path": xls_path,
+              "output_path": out_path, "update_mode": payload.get("update_mode", "update"),
+              "add_new": payload.get("add_new", "no")},
+    )
+    return {key: job[key] for key in ("job_id", "status", "progress", "message")}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_excel_job(job_id: str):
+    job = EXCEL_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {key: job.get(key) for key in (
+        "job_id", "status", "progress", "message", "output_file_id", "error", "recoverable", "kind"
+    )}
 
 
 @app.post("/api/session/{session_id}/storeys/parse")
