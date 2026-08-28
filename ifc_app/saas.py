@@ -22,7 +22,7 @@ from ifc_app.supabase_auth import (
     user_display_name,
 )
 from ifc_app.entitlements import TOOL_REGISTRY, account_level, can_access_tool, has_account_level, trial_is_active, trial_summary
-from ifc_app.reg38_projects import REG38_DEFAULT_SECTIONS, ProjectCreate, Regulation38Repository
+from ifc_app.reg38_projects import REG38_DEFAULT_SECTIONS, ZONE_TYPES, ProjectCreate, Regulation38Repository
 
 
 LOGGER = logging.getLogger("ifc_app.auth.routes")
@@ -491,7 +491,9 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
         if not project: return HTMLResponse("Project not found.", status_code=404)
         sections = repo.get_sections(token, project_id) if step == 2 else []
         files = repo.list_ifc_files(token, project_id) if step == 3 else []
-        return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files)
+        spatial = repo.spatial_review(token, project_id) if step == 5 else {}
+        return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files,
+                                spatial=spatial, zone_types=ZONE_TYPES)
     except SupabaseAuthError as exc:
         return HTMLResponse(exc.public_message, status_code=403 if exc.status_code in {401, 403} else exc.status_code)
 
@@ -542,6 +544,51 @@ async def remove_reg38_ifc(request: Request, project_id: str, file_id: str):
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     Regulation38Repository(get_auth_service()).remove_ifc(token, file_id, str(form.get("storage_path") or ""))
     return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/spaces/{space_id}")
+async def update_reg38_space(request: Request, project_id: str, space_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        Regulation38Repository(get_auth_service()).update_space(token, project_id, space_id, {
+            "space_number": str(form.get("space_number") or ""), "name": str(form.get("name") or ""),
+            "description": str(form.get("description") or ""), "occupancy_type": str(form.get("occupancy_type") or ""),
+            "occupancy_capacity": form.get("occupancy_capacity"), "high_risk": form.get("high_risk") == "yes",
+            "included_in_reg38": form.get("included_in_reg38") == "yes"})
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=5&selected=space:{space_id}", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
+                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/zones")
+async def create_reg38_zone(request: Request, project_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        zone_id = Regulation38Repository(get_auth_service()).create_zone(token, project_id, str(form.get("name") or ""),
+            str(form.get("zone_type") or "USER_DEFINED"), [str(x) for x in form.getlist("space_ids")])
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=5&selected=zone:{zone_id}", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
+                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/zones/{zone_id}")
+async def update_reg38_zone(request: Request, project_id: str, zone_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        Regulation38Repository(get_auth_service()).update_zone(token, project_id, zone_id, str(form.get("name") or ""),
+            str(form.get("zone_type") or "USER_DEFINED"), [str(x) for x in form.getlist("space_ids")])
+        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=5&selected=zone:{zone_id}", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
+                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
 
 
 @router.get("/app/tools", response_class=HTMLResponse)

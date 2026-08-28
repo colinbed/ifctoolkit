@@ -23,6 +23,8 @@ REG38_DEFAULT_SECTIONS: tuple[tuple[str, str], ...] = (
     ("TESTING_COMMISSIONING", "Testing & Commissioning"), ("DRAWINGS_MODELS", "Drawings & Models"), ("HANDOVER", "Handover"),
 )
 MAX_IFC_BYTES = 500 * 1024 * 1024
+ZONE_TYPES = ("FIRE_COMPARTMENT", "SMOKE_ZONE", "ALARM_ZONE", "SPRINKLER_ZONE", "EVACUATION_ZONE",
+              "OCCUPANCY_ZONE", "REFUGE", "HIGH_RISK", "USER_DEFINED")
 
 
 @dataclass(frozen=True)
@@ -161,3 +163,64 @@ class Regulation38Repository:
         self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}", token)
         url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
         requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
+
+    def project_role(self, token: str, project_id: str) -> str | None:
+        rows = self._data_request("GET", f"project_members?project_id=eq.{quote(project_id)}&select=role", token)
+        return str(rows[0].get("role")) if isinstance(rows, list) and rows else None
+
+    def require_project_admin(self, token: str, project_id: str) -> None:
+        if self.project_role(token, project_id) not in {"OWNER", "ADMIN"}:
+            raise SupabaseAuthError("Only a project owner or administrator can review spaces and zones.", status_code=403)
+
+    def spatial_review(self, token: str, project_id: str) -> dict[str, Any]:
+        """Return source and working spatial data separately; source tables are read-only."""
+        pid = quote(project_id)
+        spaces = self._data_request("GET", f"project_spaces?project_id=eq.{pid}&select=*,building_storeys(id,name,elevation),ifc_objects(ifc_entity,name,long_name,description,source_data)&order=name", token)
+        zones = self._data_request("GET", f"project_zones?project_id=eq.{pid}&select=*&order=name", token)
+        grids = self._data_request("GET", f"project_grids?project_id=eq.{pid}&select=*,project_grid_axes(*)&order=name", token)
+        members = self._data_request("GET", f"project_zone_members?zone_id=in.({','.join(str(z['id']) for z in zones)})&select=id,zone_id,space_id,source", token) if zones else []
+        return {"spaces": spaces if isinstance(spaces, list) else [], "zones": zones if isinstance(zones, list) else [],
+                "grids": grids if isinstance(grids, list) else [], "members": members if isinstance(members, list) else [],
+                "can_admin": self.project_role(token, project_id) in {"OWNER", "ADMIN"}}
+
+    def update_space(self, token: str, project_id: str, space_id: str, values: Mapping[str, Any]) -> None:
+        self.require_project_admin(token, project_id)
+        allowed = {"space_number", "name", "description", "occupancy_type", "occupancy_capacity", "high_risk", "included_in_reg38"}
+        payload = {key: values[key] for key in allowed if key in values}
+        if not str(payload.get("name") or "").strip():
+            raise ValueError("Space name is required.")
+        capacity = payload.get("occupancy_capacity")
+        if capacity not in (None, ""):
+            payload["occupancy_capacity"] = int(capacity)
+            if payload["occupancy_capacity"] < 0: raise ValueError("Occupancy capacity cannot be negative.")
+        else: payload["occupancy_capacity"] = None
+        self._data_request("PATCH", f"project_spaces?id=eq.{quote(space_id)}&project_id=eq.{quote(project_id)}", token, json=payload)
+
+    def create_zone(self, token: str, project_id: str, name: str, zone_type: str, space_ids: list[str]) -> str:
+        self.require_project_admin(token, project_id)
+        if not name.strip(): raise ValueError("Zone name is required.")
+        if zone_type not in ZONE_TYPES: raise ValueError("Select a valid zone type.")
+        if not space_ids: raise ValueError("Select at least one space.")
+        spaces = self._data_request("GET", f"project_spaces?project_id=eq.{quote(project_id)}&id=in.({','.join(quote(x) for x in space_ids)})&select=id,building_id,storey_id", token)
+        if not isinstance(spaces, list) or {str(x['id']) for x in spaces} != set(space_ids):
+            raise ValueError("One or more selected spaces do not belong to this project.")
+        zone_id = str(uuid4()); first = spaces[0]
+        self._data_request("POST", "project_zones", token, json={"id": zone_id, "project_id": project_id,
+            "building_id": first.get("building_id"), "storey_id": first.get("storey_id") if len({x.get('storey_id') for x in spaces}) == 1 else None,
+            "source_kind": "MANUAL", "name": name.strip(), "zone_type": zone_type})
+        self._data_request("POST", "project_zone_members", token, json=[{"zone_id": zone_id, "space_id": sid, "source": "MANUAL"} for sid in dict.fromkeys(space_ids)])
+        return zone_id
+
+    def update_zone(self, token: str, project_id: str, zone_id: str, name: str, zone_type: str, space_ids: list[str]) -> None:
+        self.require_project_admin(token, project_id)
+        if not name.strip(): raise ValueError("Zone name is required.")
+        if zone_type not in ZONE_TYPES: raise ValueError("Select a valid zone type.")
+        valid = self._data_request("GET", f"project_spaces?project_id=eq.{quote(project_id)}&id=in.({','.join(quote(x) for x in space_ids)})&select=id", token) if space_ids else []
+        if {str(x["id"]) for x in valid} != set(space_ids): raise ValueError("One or more selected spaces do not belong to this project.")
+        self._data_request("PATCH", f"project_zones?id=eq.{quote(zone_id)}&project_id=eq.{quote(project_id)}", token, json={"name": name.strip(), "zone_type": zone_type})
+        existing = self._data_request("GET", f"project_zone_members?zone_id=eq.{quote(zone_id)}&select=space_id", token)
+        old, new = {str(x["space_id"]) for x in existing}, set(space_ids)
+        for sid in old - new:
+            self._data_request("DELETE", f"project_zone_members?zone_id=eq.{quote(zone_id)}&space_id=eq.{quote(sid)}", token)
+        additions = [{"zone_id": zone_id, "space_id": sid, "source": "MANUAL"} for sid in new - old]
+        if additions: self._data_request("POST", "project_zone_members", token, json=additions)

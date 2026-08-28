@@ -31,6 +31,8 @@
       <form class="drop-zone" method="post" enctype="multipart/form-data" action="/app/projects/{{ project_id }}/regulation-38/ifc"><input id="ifc-file" type="file" name="ifc_file" accept=".ifc" required><label for="ifc-file"><strong>Drag and drop your IFC model here</strong><span>or browse for a .ifc file · maximum 500 MB</span></label><button class="button">Upload IFC</button></form>
       <div class="file-list">{% for file in files %}<article><div><strong>{{ file.original_filename }}</strong><small>{{ '%.2f'|format(file.file_size / 1048576) }} MB · Uploaded</small></div><span class="status">{{ file.ifc_processing_jobs[0].status if file.ifc_processing_jobs else 'Uploaded' }}</span>{% if not file.ifc_processing_jobs or file.ifc_processing_jobs[0].status == 'QUEUED' %}<form method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ file.id }}/remove"><input type="hidden" name="storage_path" value="{{ file.storage_path }}"><button class="link danger">Remove</button></form>{% endif %}</article>{% endfor %}</div>
       <div class="wizard-actions"><a class="button ghost" href="?step=2">Back</a><a class="button" href="?step=4">Next</a></div>
+    {% elif step == 5 %}
+      {% include "saas/reg38_spatial_review.html" %}
     {% else %}<div class="pending"><span>{{ step }}</span><h3>{{ steps[step-1] }} is pending</h3><p>Your draft is safe. IFC processing and review screens will be implemented in the next phase.</p></div><div class="wizard-actions"><a class="button ghost" href="?step={{ step-1 }}">Back</a>{% if step < 9 %}<a class="button" href="?step={{ step+1 }}">Next</a>{% else %}<a class="button" href="/app/projects">Return to projects</a>{% endif %}</div>{% endif %}
   </div>
 </section>
