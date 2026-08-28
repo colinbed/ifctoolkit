@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
+import logging
 from typing import Any, Mapping
 from urllib.parse import quote
 from uuid import uuid4
@@ -23,6 +24,7 @@ REG38_DEFAULT_SECTIONS: tuple[tuple[str, str], ...] = (
     ("TESTING_COMMISSIONING", "Testing & Commissioning"), ("DRAWINGS_MODELS", "Drawings & Models"), ("HANDOVER", "Handover"),
 )
 MAX_IFC_BYTES = 500 * 1024 * 1024
+LOGGER = logging.getLogger("ifc_app.reg38.upload")
 ZONE_TYPES = ("FIRE_COMPARTMENT", "SMOKE_ZONE", "ALARM_ZONE", "SPRINKLER_ZONE", "EVACUATION_ZONE",
               "OCCUPANCY_ZONE", "REFUGE", "HIGH_RISK", "USER_DEFINED")
 
@@ -170,34 +172,81 @@ class Regulation38Repository:
         rows = self._data_request("GET", f"ifc_files?project_id=eq.{quote(project_id)}&{query}", token)
         return [dict(row) for row in rows] if isinstance(rows, list) else []
 
-    def upload_ifc(self, token: str, user_id: str, project_id: str, filename: str, content: bytes) -> dict[str, str]:
+    def create_ifc_upload(self, token: str, project_id: str, filename: str, size: int) -> dict[str, str]:
         safe_name = Path(filename).name
-        validate_ifc(safe_name, len(content))
+        validate_ifc(safe_name, size)
+        self.require_project_edit(token, project_id)
         file_id = str(uuid4())
         storage_path = f"projects/{project_id}/models/{file_id}/{safe_name}"
-        url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
-        headers = self.auth._headers(token)
-        headers.update({"Content-Type": "application/octet-stream", "x-upsert": "false"})
+        url = f"{self.auth.settings.project_url}/storage/v1/object/upload/sign/{self.BUCKET}/{quote(storage_path, safe='/')}"
         try:
-            response = requests.post(url, headers=headers, data=content, timeout=self.auth.settings.request_timeout_seconds)
+            response = requests.post(url, headers=self.auth._headers(token), json={"upsert": False},
+                                     timeout=self.auth.settings.request_timeout_seconds)
         except requests.RequestException as exc:
+            LOGGER.exception("ifc_upload_sign_failed project_id=%s filename=%s file_size=%s storage_path=%s",
+                             project_id, safe_name, size, storage_path)
             raise SupabaseAuthError("The IFC upload is temporarily unavailable.", status_code=503, detail=str(exc)) from exc
         if not 200 <= response.status_code < 300:
+            LOGGER.error("ifc_upload_sign_failed project_id=%s filename=%s file_size=%s storage_path=%s storage_http_status=%s",
+                         project_id, safe_name, size, storage_path, response.status_code)
             raise SupabaseAuthError("The IFC file could not be uploaded.", status_code=response.status_code)
+        payload = response.json()
+        signed_url = payload.get("signedURL") or payload.get("signedUrl") or payload.get("url")
+        if not signed_url:
+            raise SupabaseAuthError("The IFC upload could not be prepared.", status_code=502)
+        if signed_url.startswith("/"):
+            signed_url = f"{self.auth.settings.project_url}/storage/v1{signed_url}"
+        return {"file_id": file_id, "storage_path": storage_path, "signed_url": signed_url}
+
+    def finalize_ifc_upload(self, token: str, user_id: str, project_id: str, file_id: str,
+                            filename: str, size: int, storage_path: str) -> dict[str, str]:
+        safe_name = Path(filename).name
+        validate_ifc(safe_name, size)
+        self.require_project_edit(token, project_id)
+        expected_path = f"projects/{project_id}/models/{file_id}/{safe_name}"
+        if storage_path != expected_path:
+            raise ValueError("The IFC upload details are invalid.")
+        object_url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
         try:
-            self._data_request("POST", "ifc_files", token, json={"id": file_id, "project_id": project_id, "storage_path": storage_path,
-                "original_filename": safe_name, "file_size": len(content), "uploaded_by": user_id, "status": "UPLOADED"})
+            stored = requests.head(object_url, headers=self.auth._headers(token),
+                                   timeout=self.auth.settings.request_timeout_seconds)
+        except requests.RequestException as exc:
+            LOGGER.exception("ifc_upload_verify_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s",
+                             project_id, user_id, safe_name, size, storage_path)
+            raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=503) from exc
+        if not 200 <= stored.status_code < 300:
+            LOGGER.error("ifc_upload_verify_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s storage_http_status=%s",
+                         project_id, user_id, safe_name, size, storage_path, stored.status_code)
+            raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=502)
+        stored_size = stored.headers.get("content-length")
+        if stored_size and int(stored_size) != size:
+            LOGGER.error("ifc_upload_size_mismatch project_id=%s user_id=%s filename=%s declared_size=%s stored_size=%s storage_path=%s",
+                         project_id, user_id, safe_name, size, stored_size, storage_path)
+            raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=400)
+        insert_result: Any = None
+        job_result: Any = None
+        try:
+            insert_result = self._data_request("POST", "ifc_files", token, json={"id": file_id, "project_id": project_id, "storage_path": storage_path,
+                "original_filename": safe_name, "file_size": size, "uploaded_by": user_id, "status": "UPLOADED"})
             job_id = str(uuid4())
-            self._data_request("POST", "ifc_processing_jobs", token, json={"id": job_id, "project_id": project_id,
-                "ifc_file_id": file_id, "status": "QUEUED"})
+            job_result = self._data_request("POST", "ifc_processing_jobs", token, json={"id": job_id, "project_id": project_id,
+                "ifc_file_id": file_id, "status": "QUEUED", "progress_percent": 0})
         except Exception:
-            requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
+            self._data_request("DELETE", f"ifc_processing_jobs?ifc_file_id=eq.{quote(file_id)}", token)
+            self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}", token)
+            requests.delete(object_url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
+            LOGGER.exception("ifc_upload_finalize_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s ifc_files_insert=%r processing_job_insert=%r",
+                             project_id, user_id, safe_name, size, storage_path, insert_result, job_result)
             raise
         return {"file_id": file_id, "job_id": job_id, "storage_path": storage_path}
 
-    def remove_ifc(self, token: str, file_id: str, storage_path: str) -> None:
-        self._data_request("DELETE", f"ifc_processing_jobs?ifc_file_id=eq.{quote(file_id)}&status=eq.QUEUED", token)
-        self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}", token)
+    def remove_ifc(self, token: str, project_id: str, file_id: str, storage_path: str) -> None:
+        self.require_project_edit(token, project_id)
+        expected_prefix = f"projects/{project_id}/models/{file_id}/"
+        if not storage_path.startswith(expected_prefix):
+            raise ValueError("The IFC file path is invalid.")
+        self._data_request("DELETE", f"ifc_processing_jobs?ifc_file_id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}&status=eq.QUEUED", token)
+        self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}", token)
         url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
         requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
 
@@ -208,6 +257,10 @@ class Regulation38Repository:
     def require_project_admin(self, token: str, project_id: str) -> None:
         if self.project_role(token, project_id) not in {"OWNER", "ADMIN"}:
             raise SupabaseAuthError("Only a project owner or administrator can review spaces and zones.", status_code=403)
+
+    def require_project_edit(self, token: str, project_id: str) -> None:
+        if self.project_role(token, project_id) not in {"OWNER", "ADMIN", "EDITOR"} and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You do not have permission to edit this project.", status_code=403)
 
     def spatial_review(self, token: str, project_id: str) -> dict[str, Any]:
         """Return source and working spatial data separately; source tables are read-only."""

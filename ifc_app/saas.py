@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Form, Request, UploadFile
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -553,17 +553,55 @@ async def update_reg38_scope(request: Request, project_id: str):
     except SupabaseAuthError as exc: return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
 
-@router.post("/app/projects/{project_id}/regulation-38/ifc")
-async def upload_reg38_ifc(request: Request, project_id: str, ifc_file: UploadFile):
+@router.post("/app/projects/{project_id}/regulation-38/ifc/initiate")
+async def initiate_reg38_ifc(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
-    content = await ifc_file.read(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     try:
-        Regulation38Repository(get_auth_service()).upload_ifc(token, str(user["id"]), project_id, ifc_file.filename or "", content)
-        return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
+        payload = await request.json()
+        result = Regulation38Repository(get_auth_service()).create_ifc_upload(
+            token, project_id, str(payload.get("filename") or ""), int(payload.get("file_size") or 0))
+        return JSONResponse(result)
     except (ValueError, SupabaseAuthError) as exc:
-        repo = Regulation38Repository(get_auth_service()); project = repo.get_project(token, project_id)
-        return _wizard_response(request, user, project, 3, files=repo.list_ifc_files(token, project_id), error=str(exc) if isinstance(exc, ValueError) else exc.public_message)
+        return JSONResponse({"detail": str(exc) if isinstance(exc, ValueError) else exc.public_message},
+                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/ifc/finalize")
+async def finalize_reg38_ifc(request: Request, project_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        payload = await request.json()
+        result = Regulation38Repository(get_auth_service()).finalize_ifc_upload(
+            token, str(user["id"]), project_id, str(payload.get("file_id") or ""),
+            str(payload.get("filename") or ""), int(payload.get("file_size") or 0),
+            str(payload.get("storage_path") or ""))
+        replace_id = str(payload.get("replace_file_id") or "")
+        replace_path = str(payload.get("replace_storage_path") or "")
+        if replace_id and replace_path:
+            Regulation38Repository(get_auth_service()).remove_ifc(token, project_id, replace_id, replace_path)
+        return JSONResponse({**result, "status": "UPLOADED", "job_status": "QUEUED"})
+    except (ValueError, SupabaseAuthError) as exc:
+        return JSONResponse({"detail": str(exc) if isinstance(exc, ValueError) else exc.public_message},
+                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+
+
+@router.post("/app/projects/{project_id}/regulation-38/ifc/failure")
+async def report_reg38_ifc_failure(request: Request, project_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    payload = await request.json()
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    Regulation38Repository(get_auth_service()).require_project_edit(token, project_id)
+    LOGGER.error(
+        "ifc_direct_upload_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s storage_http_status=%s ifc_files_insert=not_attempted processing_job_insert=not_attempted",
+        project_id, user.get("id"), str(payload.get("filename") or ""), int(payload.get("file_size") or 0),
+        str(payload.get("storage_path") or ""), int(payload.get("storage_http_status") or 0),
+    )
+    return JSONResponse({"received": True})
 
 
 @router.post("/app/projects/{project_id}/regulation-38/ifc/{file_id}/remove")
@@ -571,7 +609,7 @@ async def remove_reg38_ifc(request: Request, project_id: str, file_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    Regulation38Repository(get_auth_service()).remove_ifc(token, file_id, str(form.get("storage_path") or ""))
+    Regulation38Repository(get_auth_service()).remove_ifc(token, project_id, file_id, str(form.get("storage_path") or ""))
     return RedirectResponse(f"/app/projects/{project_id}/regulation-38?step=3", status_code=303)
 
 
