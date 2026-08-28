@@ -15,6 +15,9 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 from fastapi import Request
+from fastapi.responses import JSONResponse, RedirectResponse
+
+from ifc_app.entitlements import can_access_tool, has_account_level
 
 
 LOGGER = logging.getLogger("ifc_app.auth")
@@ -419,6 +422,27 @@ class AuthSessionMiddleware:
         scope["auth_session"] = self.decode(token)
         scope["auth_session_dirty"] = False
 
+        path = str(scope.get("path") or "")
+        requirement = _route_requirement(path)
+        if requirement:
+            request = Request(scope, receive=receive)
+            user = get_current_user(request)
+            if not user:
+                response = JSONResponse({"detail": "Authentication required."}, status_code=401) if path.startswith("/api/") else RedirectResponse(f"/login?next={path}", status_code=303)
+                await response(scope, receive, send)
+                return
+            access_token = str((scope.get("auth_session") or {}).get("access_token") or "")
+            try:
+                profile = get_auth_service().get_profile(access_token, str(user.get("id") or "")) or {}
+            except SupabaseAuthError:
+                profile = {}
+            scope["account_profile"] = profile
+            allowed = can_access_tool(profile, requirement[1]) if requirement[0] == "tool" else has_account_level(profile, requirement[1])
+            if not allowed:
+                response = JSONResponse({"detail": "Your account does not have access to this feature."}, status_code=403)
+                await response(scope, receive, send)
+                return
+
         async def send_wrapper(message: dict[str, Any]) -> None:
             if message["type"] == "http.response.start" and scope.get("auth_session_dirty"):
                 session = scope.get("auth_session") or {}
@@ -483,3 +507,48 @@ def require_user(request: Request) -> dict[str, Any] | None:
     """Return the validated Supabase user, or None when authentication is required."""
     return get_current_user(request)
 
+
+def get_account_profile(request: Request) -> dict[str, Any]:
+    """Return the trusted profile loaded by server-side authorization."""
+    profile = request.scope.get("account_profile")
+    if isinstance(profile, Mapping):
+        return dict(profile)
+    user = get_current_user(request)
+    if not user:
+        return {}
+    try:
+        profile = get_auth_service().get_profile(
+            str((request.scope.get("auth_session") or {}).get("access_token") or ""), str(user.get("id") or "")
+        ) or {}
+    except SupabaseAuthError:
+        profile = {}
+    request.scope["account_profile"] = profile
+    return dict(profile)
+
+
+def _route_requirement(path: str) -> tuple[str, str] | None:
+    """Map every application surface to its minimum entitlement."""
+    public = ("/static/", "/health", "/login", "/signup", "/forgot-password", "/reset-password", "/auth/", "/features", "/help", "/resources", "/documentation", "/pricing", "/compliance", "/about", "/contact")
+    if path in {"/", "/tools", "/api/upload/limits"} or path.startswith(public):
+        return None
+    if path.startswith("/app/regulation-38") or (path.startswith("/app/projects/") and path.endswith("/regulation-38")):
+        return ("level", "premium")
+    if path.startswith(("/wip/", "/step2ifc", "/model-checking", "/admin/")) or "/ifc-move-rotate" in path or path.startswith("/api/checks/"):
+        return ("level", "admin")
+    if path.startswith("/tools/cobieqc") or path.startswith("/api/tools/cobieqc"):
+        return ("tool", "cobie_qc")
+    if path.startswith("/tools/cobie-qa") or path.startswith("/api/cobie/"):
+        return ("tool", "cobie_qa")
+    tool_paths = {
+        "/excel": "ifc_to_excel", "/cleaner": "pset_purge", "/storeys": "storey_global_z",
+        "/levels": "storey_global_z", "/proxy": "proxy_to_ifcclass", "/presentation-layer": "presentation_layer",
+        "/ifc-qa": "ifc_data_qa", "/data-extractor": "ifc_data_qa", "/tools/reduce-file-size": "file_reduction",
+        "/tools/purge-area-spaces": "area_space_purge",
+    }
+    for prefix, tool_id in tool_paths.items():
+        if path.startswith(prefix):
+            return ("tool", tool_id)
+    # Remaining application pages and processing APIs are authenticated Standard access.
+    if path.startswith(("/app", "/api/", "/legacy/", "/files", "/viewer")):
+        return ("level", "standard")
+    return None

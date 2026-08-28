@@ -236,7 +236,9 @@ class FakeSupabaseAuth:
     def get_profile(self, access_token: str, user_id: str):
         assert access_token == "mock-access-token"
         assert user_id == self.user["id"]
-        return {"id": user_id, "full_name": "Test Member"}
+        return {"id": user_id, "full_name": "Test Member", "account_level": "standard",
+                "subscription_status": "trial", "trial_started_at": "2026-08-28T00:00:00Z",
+                "trial_ends_at": "2099-11-26T00:00:00Z"}
 
 
 def test_mocked_supabase_login_private_navigation_and_logout(monkeypatch):

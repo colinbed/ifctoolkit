@@ -2,18 +2,17 @@
 {% block title %}IFC Tools · IFC Toolkit{% endblock %}
 {% block content %}
 <section class="app-shell">
-  <span class="eyebrow">Existing functionality</span>
+  <span class="eyebrow">Authenticated workspace</span>
   <h1>IFC Tools</h1>
-  <p>The current IFC processing routes remain intact and available from this authenticated workspace.</p>
-  <div class="dashboard-cards">
-    <a href="/legacy/upload"><strong>IFC upload session</strong><span>Create a session and upload IFC files.</span></a>
-    <a href="/excel"><strong>IFC to Excel</strong><span>Extract, configure and round-trip project data.</span></a>
-    <a href="/ifc-qa/extractor"><strong>IFC Data QA</strong><span>Extract and review model information.</span></a>
-    <a href="/tools/cobieqc"><strong>COBie QC</strong><span>Run the existing COBie quality checks.</span></a>
-    <a href="/cleaner"><strong>Pset tools</strong><span>Clean unwanted property data.</span></a>
-    <a href="/proxy"><strong>Proxy / type tools</strong><span>Improve IFC class and predefined type data.</span></a>
-    <a href="/presentation-layer"><strong>Classification & layers</strong><span>Review presentation and information organisation.</span></a>
-    <a href="/tools/reduce-file-size"><strong>File reduction</strong><span>Analyse and reduce IFC file size.</span></a>
+  <p>Choose a focused workflow. Access is checked again by the server whenever a page or processing endpoint is opened.</p>
+  <div class="dashboard-cards tool-access-grid">
+    {% for tool in tools %}
+      {% if tool.available %}<a href="{{ tool.path }}">{% else %}<article class="locked-tool">{% endif %}
+        <span class="access-badge access-{{ tool.access }}">{{ tool.access|title }}{% if tool.access == 'premium' and trial_is_active(profile) %} · Trial active{% endif %}</span>
+        <strong>{{ tool.name }}</strong><span>{{ tool.description }}</span>
+        {% if not tool.available %}<small>Upgrade access required</small>{% endif %}
+      {% if tool.available %}</a>{% else %}</article>{% endif %}
+    {% endfor %}
   </div>
 </section>
 {% endblock %}

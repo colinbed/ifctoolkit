@@ -50,13 +50,6 @@
         <label for="excelPsetFilter">Property sets to include in Properties sheet</label>
         <select id="excelPsetFilter" multiple size="7"></select>
       </div>
-      <div class="excel-download-box">
-        <label for="excelFileUpdate">Excel workbook</label>
-        <div class="inline excel-inline-controls">
-          <select id="excelFileUpdate" data-files-select data-files-filter=".xlsx,.xlsm,.xls"></select>
-          <button class="btn" id="downloadExcelFile" type="button">Download Excel</button>
-        </div>
-      </div>
     </div>
     <div class="excel-update-col">
       <label for="excelIfcUpdate">IFC to update</label>
@@ -76,13 +69,20 @@
         <label><input type="radio" name="addNew" value="yes" /> Add new (create missing rows)</label>
       </div>
       <button class="btn" id="applyExcel">Apply Excel → IFC</button>
+      <div class="excel-download-box">
+        <label for="excelFileUpdate">Excel workbook output</label>
+        <div class="inline excel-inline-controls">
+          <select id="excelFileUpdate" data-files-select data-files-filter=".xlsx,.xlsm,.xls"></select>
+          <button class="btn" id="downloadExcelFile" type="button">Download Excel</button>
+        </div>
+      </div>
+      <div class="excel-bottom-actions">
+        <button class="btn hidden" id="downloadUpdatedIfc" type="button">Download updated IFC</button>
+      </div>
+      <div class="status muted" id="excelPreviewStatus">Scan an IFC model to preview classes, psets, and quantities before extraction.</div>
+      <pre class="status muted" id="excelPreviewMeta"></pre>
+      <div class="status" id="excelStatus">Select IFC and Excel files to start.</div>
     </div>
   </div>
-  <div class="excel-bottom-actions">
-    <button class="btn hidden" id="downloadUpdatedIfc" type="button">Download updated IFC</button>
-  </div>
-  <div class="status muted" id="excelPreviewStatus">Scan an IFC model to preview classes, psets, and quantities before extraction.</div>
-  <pre class="status muted" id="excelPreviewMeta"></pre>
-  <div class="status" id="excelStatus">Select IFC and Excel files to start.</div>
 </div>
 {% endblock %}
