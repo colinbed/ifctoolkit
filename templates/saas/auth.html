@@ -36,4 +36,42 @@
     {% endif %}
   </form>
 </section>
+{% if mode == "reset" %}
+<script>
+(() => {
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  const accessToken = hash.get("access_token");
+  const refreshToken = hash.get("refresh_token");
+  if (!accessToken || !refreshToken || hash.get("type") !== "recovery") return;
+
+  const payload = {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_type: hash.get("token_type"),
+    expires_in: hash.get("expires_in"),
+    expires_at: hash.get("expires_at"),
+    type: "recovery"
+  };
+
+  // Keep bearer credentials out of the address bar and browser history while
+  // the server validates them. The local payload remains available for the POST.
+  history.replaceState(null, "", "/reset-password");
+  fetch("/auth/session", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload)
+  }).then(async response => {
+    if (!response.ok) throw new Error("recovery session rejected");
+    window.location.replace("/reset-password");
+  }).catch(() => {
+    const message = document.createElement("p");
+    message.className = "error";
+    message.setAttribute("role", "alert");
+    message.textContent = "Your password reset link is invalid or has expired. Request a new password reset link.";
+    document.querySelector("section.auth form").prepend(message);
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}
