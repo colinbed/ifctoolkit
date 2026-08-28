@@ -1,0 +1,16 @@
+<div class="spatial-toolbar">
+  <label class="spatial-search">Search spaces and zones<input id="spatial-search" type="search" placeholder="Name or number"></label>
+  <span id="warning-count" class="warning-pill">0 review warnings</span>
+  <label class="toggle"><input id="grid-toggle" type="checkbox" checked> Grid</label>
+  {% if spatial.can_admin %}<button class="button small" id="new-zone" type="button">+ Manual zone</button>{% endif %}
+</div>
+{% if not spatial.can_admin %}<p class="notice">You can review this spatial information. Only a project owner or administrator can make changes.</p>{% endif %}
+<div class="spatial-review" id="spatial-review">
+  <aside class="structure-panel"><h3>Model structure</h3><nav id="structure-tree" aria-label="Model structure"></nav></aside>
+  <section class="plan-panel"><div class="plan-heading"><strong id="plan-title">Select a storey</strong><small>Generated from extracted IFC geometry</small></div><svg id="storey-plan" viewBox="0 0 800 560" role="img" aria-label="Selected storey plan"><text x="400" y="280" text-anchor="middle">Select a storey or space to view its plan</text></svg></section>
+  <aside class="details-panel" id="spatial-details"><div class="empty-detail"><strong>Select a space or zone</strong><p>Review IFC provenance and edit working values here.</p></div></aside>
+</div>
+<script id="spatial-data" type="application/json">{{ spatial|tojson }}</script>
+<script>window.reg38SpatialConfig = {projectId: {{ project_id|tojson }}, zoneTypes: {{ zone_types|tojson }}, canAdmin: {{ spatial.can_admin|tojson }}};</script>
+<script src="/static/reg38-spatial.js"></script>
+<div class="wizard-actions"><a class="button ghost" href="?step=4">Back</a><a class="button" href="?step=6">Save & Next</a></div>
