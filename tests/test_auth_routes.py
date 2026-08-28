@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import app as app_module
 import ifc_app.saas as saas
@@ -111,6 +111,30 @@ def test_env_local_does_not_override_deployment_environment(monkeypatch, tmp_pat
 
     assert os.environ["APP_URL"] == "https://deployment.example"
     assert os.environ["SUPABASE_URL"] == "https://local-ref.supabase.co"
+
+
+def test_password_reset_uses_app_url_reset_page(monkeypatch):
+    settings = supabase_auth.AuthSettings(
+        app_url="https://ifctoolkit.co.uk",
+        supabase_url="https://project-ref.supabase.co",
+        publishable_key="publishable-key",
+    )
+    service = supabase_auth.SupabaseAuthService(settings)
+    captured = {}
+
+    def fake_request_json(method, url, **kwargs):
+        captured.update(method=method, url=url, **kwargs)
+        return {}
+
+    monkeypatch.setattr(service, "_request_json", fake_request_json)
+
+    service.send_password_reset("member@example.com")
+
+    request_url = urlsplit(captured["url"])
+    assert captured["method"] == "POST"
+    assert request_url.path == "/auth/v1/recover"
+    assert parse_qs(request_url.query)["redirect_to"] == ["https://ifctoolkit.co.uk/reset-password"]
+    assert captured["json"] == {"email": "member@example.com"}
 
 
 class FakeSupabaseAuth:

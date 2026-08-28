@@ -44,7 +44,7 @@ Local `.env` files are intentionally ignored and must not be committed. Configur
 | `MIN_READY_TEMP_FREE_BYTES` | Readiness | Minimum free temporary disk bytes required for `/health/ready`. | `536870912` |
 | `MAX_UPLOAD_SIZE_MB` | Upload limits | Maximum upload size in MiB for application-level validation. | `1200` |
 
-For Supabase Auth, set the project Site URL to the production `APP_URL` and allow `<APP_URL>/auth/callback` as a redirect URL for email confirmation and password recovery. If a `public.profiles` table is enabled for optional profile data, it must use row-level security policies that restrict each user to their own row. The application never requires or accepts a Supabase service-role key.
+For Supabase Auth, set the project Site URL to the production `APP_URL` and allow `<APP_URL>/auth/callback` for email confirmation and `<APP_URL>/reset-password` for password recovery. If a `public.profiles` table is enabled for optional profile data, it must use row-level security policies that restrict each user to their own row. The application never requires or accepts a Supabase service-role key.
 
 ### Deploy to Railway
 
@@ -52,7 +52,7 @@ For Supabase Auth, set the project Site URL to the production `APP_URL` and allo
 2. Railway uses the repository `Dockerfile`; no GHCR image or GitHub deployment workflow is required.
 3. Add `AUTH_SECRET`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `APP_URL` as Railway Variables. Add the upload/retention variables from the table as appropriate. Do not commit their values.
 4. Generate a Railway domain, then set `APP_URL` to its HTTPS origin (without a trailing slash) and redeploy.
-5. In Supabase Auth URL Configuration, set the Site URL to `APP_URL` and add `<APP_URL>/auth/callback` to Redirect URLs. Repeat this for a later custom domain before switching `APP_URL`.
+5. In Supabase Auth URL Configuration, set the Site URL to `APP_URL` and add `<APP_URL>/auth/callback` and `<APP_URL>/reset-password` to Redirect URLs. Repeat this for a later custom domain before switching `APP_URL`.
 6. Verify `/health/live`, `/health/ready`, `/health/build-info`, the public site, and an authentication round trip. A Railway health check is configured against `/health/live`; readiness additionally validates auth variables and temporary disk capacity.
 7. Add and verify a custom domain later if required, then update both Railway `APP_URL` and Supabase URL Configuration.
 

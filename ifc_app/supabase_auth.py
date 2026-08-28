@@ -193,7 +193,7 @@ class SupabaseAuthService:
         )
 
     def send_password_reset(self, email: str) -> None:
-        redirect_to = f"{self.settings.app_url}/auth/callback"
+        redirect_to = f"{self.settings.app_url}/reset-password"
         query = urlencode({"redirect_to": redirect_to})
         self._request_json(
             "POST",
