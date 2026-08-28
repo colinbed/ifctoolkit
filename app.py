@@ -455,7 +455,16 @@ class SessionStore:
 
     def ensure(self, session_id: str) -> str:
         if not self.exists(session_id):
-            raise HTTPException(status_code=404, detail="Session not found")
+            APP_LOGGER.warning("PROCESSING_SESSION_NOT_FOUND session_id=%s", session_id)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "SESSION_NOT_FOUND",
+                    "message": "The temporary processing session no longer exists.",
+                    "session_id": session_id,
+                    "recoverable": True,
+                },
+            )
         self.touch(session_id)
         return self.session_path(session_id)
 
@@ -6990,16 +6999,22 @@ def purge_area_spaces_page(request: Request):
 @app.post("/api/session")
 def create_session(payload: Dict[str, Any] = Body(default=None)):
     SESSION_STORE.cleanup_stale()
-    incoming = payload.get("session_id") if payload else None
+    incoming = str(payload.get("session_id") or "").strip().lower() if payload else ""
+    if incoming:
+        _require_valid_session_id(incoming)
     if incoming and SESSION_STORE.exists(incoming):
         SESSION_STORE.touch(incoming)
         session_id = incoming
+        status = "ready"
         APP_LOGGER.info("session_reused session_id=%s", session_id)
     else:
+        if incoming:
+            APP_LOGGER.warning("PROCESSING_SESSION_NOT_FOUND session_id=%s recovery=create", incoming)
         session_id = SESSION_STORE.create()
+        status = "recovered" if incoming else "ready"
         APP_LOGGER.info("session_created session_id=%s root=%s", session_id, SESSION_STORE.session_path(session_id))
     expiry = utc_now() + SESSION_STORE.ttl
-    return {"session_id": session_id, "expires_at": expiry.isoformat() + "Z"}
+    return {"session_id": session_id, "status": status, "expires_at": expiry.isoformat() + "Z"}
 
 
 @app.get("/api/session/{session_id}")

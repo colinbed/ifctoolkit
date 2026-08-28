@@ -8,8 +8,11 @@
 
   function readStoredSessionId() {
     try {
-      const canonicalId = localStorage.getItem(STORAGE_KEY) || "";
+      const canonicalId = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY) || "";
       const normalizedCanonical = String(canonicalId || "").trim();
+      // Migrate deployments that persisted an ephemeral processing id indefinitely.
+      localStorage.removeItem(STORAGE_KEY);
+      if (normalizedCanonical) sessionStorage.setItem(STORAGE_KEY, normalizedCanonical);
       if (normalizedCanonical) return normalizedCanonical;
       return "";
     } catch (_) {
@@ -21,10 +24,11 @@
     const value = String(sessionId || "").trim();
     try {
       if (value) {
-        localStorage.setItem(STORAGE_KEY, value);
+        sessionStorage.setItem(STORAGE_KEY, value);
       } else {
-        localStorage.removeItem(STORAGE_KEY);
+        sessionStorage.removeItem(STORAGE_KEY);
       }
+      localStorage.removeItem(STORAGE_KEY);
     } catch (_) {
       // no-op for private mode/storage-disabled environments
     }
@@ -65,14 +69,15 @@
   }
 
   async function ensureSession(options = {}) {
-    const { createIfMissing = true } = options;
+    const { createIfMissing = true, validate = true, forceNew = false } = options;
     const existing = getCurrentSessionId();
-    if (existing || !createIfMissing) return existing;
+    if (existing && !validate && !forceNew) return existing;
+    if (!existing && !createIfMissing) return existing;
     if (!sessionPromise) {
       sessionPromise = fetch("/api/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: existing || "" }),
+        body: JSON.stringify({ session_id: forceNew ? "" : (existing || "") }),
       })
         .then(async (resp) => {
           if (!resp.ok) throw new Error(`Session request failed (${resp.status})`);
@@ -87,6 +92,17 @@
         });
     }
     return sessionPromise;
+  }
+
+  async function recoverSession(staleSessionId = "") {
+    const stale = String(staleSessionId || "").trim();
+    if (stale && stale !== getCurrentSessionId()) setCurrentSessionId(stale);
+    return ensureSession({ createIfMissing: true, validate: true });
+  }
+
+  function isSessionNotFound(status, body) {
+    const detail = body?.detail || body || {};
+    return (status === 404 || status === 410) && (detail?.code === "SESSION_NOT_FOUND" || detail?.error === "SESSION_NOT_FOUND");
   }
 
   function shortSessionId(sessionId, len = 8) {
@@ -148,6 +164,10 @@
         // no-op: diagnostic hooks should never break fetch flow
       }
     }
+    if (!resp.ok && !options.retried && isSessionNotFound(resp.status, data)) {
+      const replacement = await recoverSession(sid);
+      return getSessionFiles(replacement, { ...options, retried: true });
+    }
     if (!resp.ok) {
       const message = `Failed to list session files (HTTP ${resp.status})`;
       const err = new Error(message);
@@ -184,6 +204,8 @@
     getActiveSessionId,
     setCurrentSessionId,
     ensureSession,
+    recoverSession,
+    isSessionNotFound,
     shortSessionId,
     normalizeSessionFile,
     getSessionFiles,
