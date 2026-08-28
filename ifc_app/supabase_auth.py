@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -172,7 +173,8 @@ class SupabaseAuthService:
                     or payload.get("error")
                     or ""
                 )
-            LOGGER.warning("Supabase Auth request failed with HTTP %s: %s", response.status_code, detail)
+            # Error bodies can contain provider diagnostics; never echo auth material.
+            LOGGER.warning("Supabase Auth request failed with HTTP %s", response.status_code)
             raise SupabaseAuthError(public_error, status_code=response.status_code, detail=detail)
         return payload
 
@@ -248,6 +250,17 @@ class SupabaseAuthService:
         refresh_token = str(session.get("refresh_token") or "")
         if not access_token:
             raise SupabaseAuthError("Please log in to continue.", status_code=401)
+        expires_at = session.get("expires_at")
+        try:
+            is_expired = bool(expires_at) and float(expires_at) <= time.time() + 30
+        except (TypeError, ValueError):
+            is_expired = False
+        if is_expired and refresh_token:
+            refreshed = self.refresh_session(refresh_token)
+            user = refreshed.get("user") if isinstance(refreshed, Mapping) else None
+            if not isinstance(user, Mapping):
+                user = self.get_user(str(refreshed.get("access_token") or ""))
+            return dict(user), session_from_auth_response(refreshed)
         try:
             return self.get_user(access_token), dict(session)
         except SupabaseAuthError as exc:
@@ -491,7 +504,7 @@ def get_current_user(request: Request) -> dict[str, Any] | None:
     try:
         user, validated_session = get_auth_service().validate_session(session)
     except SupabaseAuthError as exc:
-        LOGGER.info("Supabase browser session rejected: %s", exc.detail or exc.public_message)
+        LOGGER.info("Supabase browser auth session rejected status=%s", exc.status_code)
         clear_auth_session(request)
         request.scope["auth_user_resolved"] = True
         request.scope["auth_user"] = None

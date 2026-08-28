@@ -167,6 +167,7 @@ async function refreshFiles() {
   try {
     if (window.IFCSession?.getSessionFiles) {
       state.files = await window.IFCSession.getSessionFiles(state.sessionId);
+      state.sessionId = window.IFCSession.getActiveSessionId() || state.sessionId;
     } else {
       const resp = await fetchWithTimeout(`/api/session/${state.sessionId}/files`, {}, 8000);
       if (!resp.ok) throw new Error("Could not list files");
@@ -642,7 +643,12 @@ function uploadWithProgress(url, form, options = {}) {
           resolve(null);
         }
       } else {
-        reject(new Error(`Upload failed (${xhr.status})`));
+        let payload = null;
+        try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (_) { payload = null; }
+        const error = new Error(`Upload failed (${xhr.status})`);
+        error.status = xhr.status;
+        error.body = payload;
+        reject(error);
       }
     };
     xhr.send(form);
@@ -657,7 +663,7 @@ async function uploadFiles() {
   }
   const activeSessionId = String(
     window.IFCSession?.getActiveSessionId?.()
-    || localStorage.getItem("ifc_toolkit_session_id")
+    || sessionStorage.getItem("ifc_toolkit_session_id")
     || state.sessionId
     || ""
   ).trim();
@@ -725,11 +731,11 @@ async function uploadFiles() {
     }
   }, 600);
   const targetNames = files.map((f) => f.name);
-  const uploadUrl = `/api/session/${activeSessionId}/upload`;
+  let uploadUrl = `/api/session/${activeSessionId}/upload`;
   console.log("[upload] activeSessionId", activeSessionId);
   console.log("[upload] uploadUrl", uploadUrl);
   try {
-    const uploadPayload = await uploadWithProgress(uploadUrl, form, {
+    const progressOptions = {
       onProgress: ({ loaded, total, lengthComputable, timestamp }) => {
         sawProgressEvent = true;
         const progressTotal = lengthComputable && total > 0 ? total : totalBytes || (files[0]?.size || 0);
@@ -780,7 +786,17 @@ async function uploadFiles() {
           updateUploadStatus("Saving file to session storage...");
         }
       },
-    });
+    };
+    let uploadPayload;
+    try {
+      uploadPayload = await uploadWithProgress(uploadUrl, form, progressOptions);
+    } catch (uploadError) {
+      if (!window.IFCSession?.isSessionNotFound?.(uploadError.status, uploadError.body)) throw uploadError;
+      const replacement = await window.IFCSession.recoverSession(activeSessionId);
+      state.sessionId = replacement;
+      uploadUrl = `/api/session/${replacement}/upload`;
+      uploadPayload = await uploadWithProgress(uploadUrl, form, progressOptions);
+    }
     if (uploadPayload?.files && Array.isArray(uploadPayload.files)) {
       state.files = uploadPayload.files;
     }

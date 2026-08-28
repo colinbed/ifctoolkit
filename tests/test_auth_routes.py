@@ -147,6 +147,36 @@ class RecoverySupabaseAuth:
         return self.user, dict(session)
 
 
+def test_expired_access_token_refreshes_before_user_lookup(monkeypatch):
+    settings = supabase_auth.AuthSettings(
+        supabase_url="https://example.supabase.co",
+        publishable_key="public-key",
+        app_url="https://ifctoolkit.example",
+    )
+    service = supabase_auth.SupabaseAuthService(settings)
+    calls = []
+
+    def fake_refresh(refresh_token):
+        calls.append(("refresh", refresh_token))
+        return {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_at": 4102444800,
+            "user": {"id": "user-1"},
+        }
+
+    monkeypatch.setattr(service, "refresh_session", fake_refresh)
+    monkeypatch.setattr(service, "get_user", lambda token: (_ for _ in ()).throw(AssertionError("expired token was used")))
+
+    user, refreshed = service.validate_session(
+        {"access_token": "expired-access", "refresh_token": "valid-refresh", "expires_at": 1}
+    )
+
+    assert calls == [("refresh", "valid-refresh")]
+    assert user == {"id": "user-1"}
+    assert refreshed["access_token"] == "new-access"
+
+
 def test_recovery_session_handoff_enables_reset_form(monkeypatch):
     fake = RecoverySupabaseAuth()
     monkeypatch.setattr(saas, "get_auth_service", lambda: fake)
