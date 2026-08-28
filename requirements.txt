@@ -10,3 +10,4 @@ pyyaml
 psycopg[binary]
 requests
 lxml
+psutil
