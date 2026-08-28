@@ -22,6 +22,15 @@ LOGGER = logging.getLogger("ifc_app.excel_jobs")
 TERMINAL = {"completed", "failed"}
 
 
+def _rss_mb() -> Optional[float]:
+    """Observe the web parent without importing/opening an IFC in that process."""
+    try:
+        import psutil
+        return round(psutil.Process().memory_info().rss / 1048576, 2)
+    except ImportError:  # pragma: no cover - optional operational metric
+        return None
+
+
 class ExcelJobStore:
     def __init__(self, root: Path, max_workers: int = 1):
         self.root = root
@@ -87,8 +96,10 @@ class ExcelJobStore:
         result_path = self.root / f"{job_id}.result.json"
         command = [sys.executable, "-m", "backend.excel_job_runner", str(spec_path), str(result_path)]
         started = time.monotonic()
+        LOGGER.info("EXCEL_EXTRACTION_PARENT_MEMORY job_id=%s web_rss_mb=%s worker_ifc_loaded=false", job_id, _rss_mb())
         completed = subprocess.run(command, cwd=str(Path(__file__).resolve().parents[1]), check=False)
         elapsed = time.monotonic() - started
+        LOGGER.info("EXCEL_EXTRACTION_PARENT_MEMORY job_id=%s web_rss_mb=%s worker_finished=true", job_id, _rss_mb())
         if completed.returncode != 0:
             if completed.returncode < 0:
                 reason = f"worker terminated by signal {-completed.returncode}"
