@@ -14,6 +14,7 @@
   let dragDepth = 0;
   let replacement = {};
   let currentUpload = null;
+  let pendingFinalization = null;
 
   const formatSize = bytes => `${(bytes / 1048576).toFixed(1)} MB`;
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
@@ -29,6 +30,8 @@
       status.innerHTML = `<p><strong>✓ IFC uploaded</strong></p>${details(selectedFile)}<span>Status: Queued for model scan</span><div class="upload-actions"><button type="button" class="link replace-selection">Replace IFC</button><button type="button" class="link danger remove-uploaded">Remove</button></div>`;
     } else if (state === "FAILED") {
       status.innerHTML = `<p><strong>Upload failed</strong></p><span>${escapeHtml(message || "We couldn't upload the IFC file.")}</span>${selectedFile ? details(selectedFile) : ""}<div class="upload-actions"><button type="button" class="button small retry-upload">Retry</button><button type="button" class="link replace-selection">Choose another file</button></div>`;
+    } else if (state === "FINALIZE_FAILED") {
+      status.innerHTML = `<p><strong>IFC uploaded, but the project could not be updated.</strong></p><span>${escapeHtml(message)}</span>${selectedFile ? details(selectedFile) : ""}<div class="upload-actions"><button type="button" class="button small retry-finalize">Retry finalisation</button></div>`;
     } else status.replaceChildren();
   }
 
@@ -70,23 +73,35 @@
         xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
         xhr.send(file);
       });
-      await jsonRequest(`/app/projects/${encodeURIComponent(projectId)}/regulation-38/ifc/finalize`, {
-        method: "POST", body: JSON.stringify({...prepared, ...replacement, filename: file.name, file_size: file.size})
+      pendingFinalization = {...prepared, ...replacement, filename: file.name, file_size: file.size};
+      await finalizeUpload();
+    } catch (error) {
+      activeRequest = null;
+      if (prepared && !pendingFinalization) fetch(`/app/projects/${encodeURIComponent(projectId)}/regulation-38/ifc/failure`, {
+        method: "POST", headers: {"Content-Type": "application/json"}, keepalive: true,
+        body: JSON.stringify({filename: file.name, file_size: file.size, storage_path: prepared.storage_path, storage_http_status: error.storageStatus || 0})
+      }).catch(() => {});
+      if (pendingFinalization) render("FINALIZE_FAILED", error.message);
+      else render("FAILED", error.message);
+    }
+  }
+
+  async function finalizeUpload() {
+    try {
+      const completed = await jsonRequest(`/app/projects/${encodeURIComponent(projectId)}/regulation-38/ifc/finalize`, {
+        method: "POST", body: JSON.stringify(pendingFinalization)
       });
       activeRequest = null;
-      currentUpload = prepared;
+      currentUpload = {...pendingFinalization, ...completed};
+      pendingFinalization = null;
       render("UPLOADED");
       next.classList.remove("disabled");
       next.removeAttribute("aria-disabled");
       next.removeAttribute("tabindex");
       next.href = `/app/regulation-38/projects/${encodeURIComponent(projectId)}/setup/model-scan`;
     } catch (error) {
-      activeRequest = null;
-      if (prepared) fetch(`/app/projects/${encodeURIComponent(projectId)}/regulation-38/ifc/failure`, {
-        method: "POST", headers: {"Content-Type": "application/json"}, keepalive: true,
-        body: JSON.stringify({filename: file.name, file_size: file.size, storage_path: prepared.storage_path, storage_http_status: error.storageStatus || 0})
-      }).catch(() => {});
-      render("FAILED", error.message);
+      render("FINALIZE_FAILED", error.message);
+      throw error;
     }
   }
 
@@ -112,6 +127,7 @@
   status.addEventListener("click", event => {
     if (event.target.closest(".replace-selection")) input.click();
     if (event.target.closest(".retry-upload") && selectedFile) upload(selectedFile);
+    if (event.target.closest(".retry-finalize") && pendingFinalization) finalizeUpload().catch(() => {});
     if (event.target.closest(".remove-selection")) { if (activeRequest) activeRequest.abort(); selectedFile = null; input.value = ""; render("EMPTY"); }
     if (event.target.closest(".remove-uploaded") && currentUpload) {
       const body = new FormData(); body.append("storage_path", currentUpload.storage_path);
