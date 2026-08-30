@@ -373,14 +373,40 @@ class Regulation38Repository:
         rows = self._data_request("GET", f"project_members?project_id=eq.{quote(project_id)}&select=role", token)
         return str(rows[0].get("role")) if isinstance(rows, list) and rows else None
 
-    def model_scan(self, token: str, project_id: str) -> dict[str, Any]:
+    def model_scan(self, token: str, project_id: str, authenticated_user_id: str = "") -> dict[str, Any]:
+        """Load scan prerequisites using RLS membership, without an Admin Auth lookup."""
+        reference = str(uuid4())
+        project_rows = self._data_request(
+            "GET", f"projects?id=eq.{quote(project_id)}&select=id,created_by", token)
+        if not project_rows:
+            LOGGER.info("reg38_model_scan_project_missing reference=%s project_id=%s authenticated_user_id=%s",
+                        reference, project_id, authenticated_user_id)
+            raise SupabaseAuthError("Project not found.", status_code=404)
+        project = dict(project_rows[0])
+        members = self._data_request(
+            "GET", f"project_members?project_id=eq.{quote(project_id)}&select=id,user_id,role", token)
+        member_user_ids = [str(row.get("user_id") or "") for row in members if isinstance(row, Mapping)]
         files = self.list_ifc_files(token, project_id)
         if not files:
+            LOGGER.info(
+                "reg38_model_scan_prerequisites reference=%s project_id=%s authenticated_user_id=%s "
+                "created_by=%s member_user_ids=%s project=present finalized_ifc_file=missing processing_job=missing",
+                reference, project_id, authenticated_user_id, project.get("created_by"), member_user_ids,
+            )
             return {"job": None, "warnings": []}
         file = files[0]
         jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at.desc&limit=1", token)
         warnings = self._data_request("GET", f"model_scan_warnings?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at", token)
-        return {"file": file, "job": dict(jobs[0]) if isinstance(jobs, list) and jobs else None,
+        job = dict(jobs[0]) if isinstance(jobs, list) and jobs else None
+        LOGGER.info(
+            "reg38_model_scan_prerequisites reference=%s project_id=%s authenticated_user_id=%s created_by=%s "
+            "member_user_ids=%s project=present finalized_ifc_file=present model_id=%s model_status=%s "
+            "storage_path=%s processing_job=%s job_status=%s",
+            reference, project_id, authenticated_user_id, project.get("created_by"), member_user_ids,
+            file.get("id"), file.get("status"), file.get("storage_path"), "present" if job else "missing",
+            (job or {}).get("status"),
+        )
+        return {"file": file, "job": job,
                 "warnings": warnings if isinstance(warnings, list) else []}
 
     def retry_model_scan(self, token: str, project_id: str, file_id: str) -> str:

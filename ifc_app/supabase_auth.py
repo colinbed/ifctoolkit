@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlencode, urlparse
+from uuid import uuid4
 
 import requests
 from fastapi import Request
@@ -143,6 +144,7 @@ class SupabaseAuthService:
         *,
         access_token: str | None = None,
         public_error: str,
+        requested_user_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
         try:
@@ -173,10 +175,58 @@ class SupabaseAuthService:
                     or payload.get("error")
                     or ""
                 )
-            # Error bodies can contain provider diagnostics; never echo auth material.
-            LOGGER.warning("Supabase Auth request failed with HTTP %s", response.status_code)
+            reference = str(uuid4())
+            parsed = urlparse(url)
+            endpoint = parsed.path
+            token = str(access_token or "")
+            credential = (
+                "service_role"
+                if token and hmac.compare_digest(token, os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
+                else "user_token" if token else "publishable_key"
+            )
+            user_id = requested_user_id or self._token_subject(token)
+            # Only selected provider fields are recorded, bounded to prevent log
+            # injection. Request/response headers and credentials are never logged.
+            safe_response = self._safe_auth_response(payload, response)
+            LOGGER.warning(
+                "supabase_auth_request_failed method=%s endpoint=%s user_id=%s credential=%s "
+                "status=%s response=%s reference=%s",
+                method.upper(), endpoint, user_id or "unknown", credential,
+                response.status_code, safe_response, reference,
+            )
             raise SupabaseAuthError(public_error, status_code=response.status_code, detail=detail)
         return payload
+
+    @staticmethod
+    def _token_subject(token: str) -> str:
+        """Read a JWT subject for diagnostics without validating or logging the token."""
+        try:
+            parts = token.split(".")
+            payload = json.loads(_urlsafe_b64decode(parts[1])) if len(parts) == 3 else {}
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return ""
+        return str(payload.get("sub") or "") if isinstance(payload, Mapping) else ""
+
+    @staticmethod
+    def _safe_auth_response(payload: Any, response: requests.Response) -> str:
+        allowed = ("code", "error", "error_code", "error_description", "msg", "message")
+        if isinstance(payload, Mapping):
+            safe = {key: str(payload[key])[:500].replace("\n", " ") for key in allowed if payload.get(key) is not None}
+            return json.dumps(safe or {"response": "unrecognised JSON error"}, separators=(",", ":"))[:1000]
+        return str(getattr(response, "text", ""))[:1000].replace("\n", " ") or "{}"
+
+    def get_user_by_id(self, user_id: str) -> dict[str, Any]:
+        """Look up an Auth user with Supabase's server-only Admin Auth endpoint."""
+        service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        if not service_key:
+            raise SupabaseAuthError("User metadata is temporarily unavailable.", status_code=503,
+                                    detail="SUPABASE_SERVICE_ROLE_KEY is missing")
+        payload = self._request_json(
+            "GET", f"{self.settings.auth_url}/admin/users/{user_id}",
+            access_token=service_key, requested_user_id=user_id,
+            public_error="User metadata is temporarily unavailable.",
+        )
+        return dict(payload.get("user", payload)) if isinstance(payload, Mapping) else {}
 
     def sign_in(self, email: str, password: str) -> dict[str, Any]:
         return self._request_json(

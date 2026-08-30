@@ -508,12 +508,13 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
         if not project: return HTMLResponse("Project not found.", status_code=404)
         sections = repo.get_sections(token, project_id) if step == 2 else []
         files = repo.list_ifc_files(token, project_id) if step == 3 else []
-        model_scan = repo.model_scan(token, project_id) if step == 4 else {}
+        model_scan = repo.model_scan(token, project_id, str(user.get("id") or "")) if step == 4 else {}
         spatial = repo.spatial_review(token, project_id) if step == 5 else {}
         return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files,
                                 model_scan=model_scan, spatial=spatial, zone_types=ZONE_TYPES)
     except SupabaseAuthError as exc:
-        return HTMLResponse(exc.public_message, status_code=403 if exc.status_code in {401, 403} else exc.status_code)
+        status = 403 if exc.status_code in {401, 403} else 404 if exc.status_code == 404 and exc.public_message == "Project not found." else 503 if exc.status_code == 503 else 502
+        return HTMLResponse(exc.public_message, status_code=status)
 
 
 @router.get("/app/regulation-38/projects/{project_id}/setup/{setup_step}", response_class=HTMLResponse)
