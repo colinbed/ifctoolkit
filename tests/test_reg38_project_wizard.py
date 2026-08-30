@@ -53,6 +53,56 @@ def test_ifc_upload_is_signed_then_creates_file_and_job_after_storage_confirmati
     assert finalize["original_name"] == "model.ifc"
     assert finalize["object_size"] == 13
     assert "/original/model.ifc" in finalize["object_path"]
+    assert captured["url"].startswith("https://example.supabase.co/storage/v1/object/upload/sign/project-files/projects/")
+    assert captured["json"] == {}
+    assert "project-files/project-files" not in captured["url"]
+
+
+def test_valid_45_mb_ifc_is_sent_for_signing(monkeypatch):
+    class Response:
+        status_code = 200
+        def json(self): return {"url": "/object/upload/sign/project-files/path?token=signed"}
+    called = {}
+    monkeypatch.setattr(module.requests, "post", lambda url, **kwargs: (called.update(url=url) or Response()))
+    result = Regulation38Repository(FakeAuth()).create_ifc_upload(
+        "token", "00000000-0000-4000-8000-000000000010", "../building model.ifc", 45 * 1024 * 1024)
+    assert called["url"].endswith("/original/building%20model.ifc")
+    assert result["storage_path"].endswith("/original/building model.ifc")
+
+
+@pytest.mark.parametrize("status,body", [
+    (400, {"statusCode": "400", "error": "Bad Request", "message": "Bucket not found"}),
+    (401, {"statusCode": "401", "error": "Unauthorized", "message": "Invalid JWT"}),
+    (403, {"statusCode": "403", "error": "Forbidden", "message": "new row violates row-level security policy"}),
+])
+def test_signed_upload_errors_are_logged_safely_and_return_reference(monkeypatch, caplog, status, body):
+    class Response:
+        status_code = status
+        text = ""
+        def json(self): return body
+    monkeypatch.setattr(module.requests, "post", lambda *args, **kwargs: Response())
+    with caplog.at_level("ERROR"), pytest.raises(module.SupabaseAuthError) as caught:
+        Regulation38Repository(FakeAuth()).create_ifc_upload(
+            "secret-user-jwt", "00000000-0000-4000-8000-000000000010", "model.ifc", 100)
+    assert caught.value.status_code == 502
+    assert caught.value.public_message.startswith("Storage could not prepare this upload. Reference: ")
+    assert f"storage_http_status={status}" in caplog.text
+    assert body["message"] in caplog.text
+    assert "secret-user-jwt" not in caplog.text and "Bearer" not in caplog.text and "apikey" not in caplog.text
+
+
+def test_storage_bucket_health_reports_existing_and_missing_bucket(monkeypatch, caplog):
+    class Response:
+        text = ""
+        def __init__(self, status): self.status_code = status
+        def json(self): return ({"id": "project-files"} if self.status_code == 200 else
+                                {"statusCode": "404", "error": "not_found", "message": "Bucket not found"})
+    monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: Response(200))
+    assert module.check_reg38_storage_bucket(FakeAuth()) is True
+    monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: Response(404))
+    with caplog.at_level("ERROR"):
+        assert module.check_reg38_storage_bucket(FakeAuth()) is False
+    assert "Bucket not found" in caplog.text
 
 
 def test_storage_failure_does_not_create_processing_job(monkeypatch):

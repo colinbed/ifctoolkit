@@ -36,6 +36,7 @@ Local `.env` files are intentionally ignored and must not be committed. Configur
 | `APP_URL` | Production authentication/links | Public base URL for the deployed app. | `https://ifctoolkit.example.com` |
 | `SUPABASE_URL` | Authentication | Supabase project URL. A URL already ending in `/auth/v1` is also accepted. | `https://<project-ref>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | Authentication | Supabase publishable key used for Auth and user-scoped REST calls. Never use a service-role key here. | `<supabase-publishable-key>` |
+| `REG38_STORAGE_BUCKET` | Regulation 38 direct uploads | Existing private Supabase Storage bucket id. The default and migration-created bucket is `project-files`. | `project-files` |
 | `SUPABASE_AUTH_TIMEOUT_SECONDS` | Authentication | Optional outbound Supabase request timeout. | `10` |
 | `STRIPE_SECRET_KEY` | Billing integrations | Stripe secret API key, if billing is enabled. Keep it in a secret manager. | `<stripe-secret-key-from-provider>` |
 | `EMAIL_PROVIDER_KEY` | Transactional email | Provider API key for outbound email, if enabled. Keep it in a secret manager. | `<email-provider-secret-key>` |
