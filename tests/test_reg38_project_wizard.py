@@ -39,10 +39,26 @@ def test_ifc_upload_is_signed_then_creates_file_and_job_after_storage_confirmati
     class Response:
         status_code = 200
         headers = {}
+        content = b'"job-id"'
         def json(self): return {"signedURL": "/object/upload/sign/project-files/path?token=signed"}
     def post(url, **kwargs): captured.update(url=url, **kwargs); return Response()
     monkeypatch.setattr(module.requests, "post", post)
     monkeypatch.setattr(module.requests, "head", lambda *args, **kwargs: Response())
+    class DataResponse:
+        status_code = 200
+        content = b"yes"
+        text = ""
+        def __init__(self, payload): self.payload = payload
+        def json(self): return self.payload
+    def data_request(method, url, **kwargs):
+        if "rpc/finalize_ifc_upload" in url:
+            auth.calls.append((method, url, kwargs))
+            return DataResponse("job-id")
+        if "ifc_files?" in url:
+            return DataResponse([{"id": kwargs.get("json", {}).get("target_file"), "status": "UPLOADED",
+                                  "storage_path": prepared["storage_path"]}])
+        return DataResponse([{"id": "00000000-0000-4000-8000-000000000010"}])
+    monkeypatch.setattr(module.requests, "request", data_request)
     repo = Regulation38Repository(auth)
     prepared = repo.create_ifc_upload("token", "00000000-0000-4000-8000-000000000010", "model.ifc", 13)
     assert prepared["signed_url"].startswith("https://example.supabase.co/storage/v1/")
@@ -97,8 +113,11 @@ def test_storage_bucket_health_reports_existing_and_missing_bucket(monkeypatch, 
         def __init__(self, status): self.status_code = status
         def json(self): return ({"id": "project-files"} if self.status_code == 200 else
                                 {"statusCode": "404", "error": "not_found", "message": "Bucket not found"})
-    monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: Response(200))
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-secret")
+    seen = {}
+    monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: (seen.update(kwargs) or Response(200)))
     assert module.check_reg38_storage_bucket(FakeAuth()) is True
+    assert seen["headers"]["Authorization"] == "Bearer service-secret"
     monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: Response(404))
     with caplog.at_level("ERROR"):
         assert module.check_reg38_storage_bucket(FakeAuth()) is False
@@ -111,7 +130,7 @@ def test_storage_failure_does_not_create_processing_job(monkeypatch):
         status_code = 404
         headers = {}
     monkeypatch.setattr(module.requests, "head", lambda *args, **kwargs: Missing())
-    with pytest.raises(module.SupabaseAuthError, match="confirmed"):
+    with pytest.raises(module.SupabaseAuthError, match="project could not be updated"):
         Regulation38Repository(auth).finalize_ifc_upload(
             "token", "user", "00000000-0000-4000-8000-000000000010",
             "00000000-0000-4000-8000-000000000011", "model.ifc", 13,
@@ -168,3 +187,20 @@ def test_project_files_migration_is_private_project_scoped_and_atomic():
     assert "public.can_edit_project(public.storage_project_id(name))" in sql
     assert "models/%s/original/%s" in sql
     assert "insert into public.ifc_files" in sql and "insert into public.ifc_processing_jobs" in sql
+
+
+def test_completion_recovery_is_idempotent_and_audits_schema():
+    sql = open("supabase/migrations/202608300001_reg38_ifc_completion_recovery.sql", encoding="utf-8").read().lower()
+    assert "on conflict (id) do update" in sql
+    assert "status in ('queued','running')" in sql
+    for name in ("projects", "project_members", "ifc_files", "ifc_processing_jobs",
+                 "create_reg38_project", "save_reg38_scope", "finalize_ifc_upload"):
+        assert name in sql
+
+
+def test_upload_ui_retries_finalisation_without_reupload_or_cleanup():
+    script = open("static/reg38-ifc-upload.js", encoding="utf-8").read()
+    assert "IFC uploaded, but the project could not be updated." in script
+    assert 'closest(".retry-finalize")' in script
+    assert "finalizeUpload().catch" in script
+    assert "prepared && !pendingFinalization" in script

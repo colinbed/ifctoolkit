@@ -36,10 +36,18 @@ def check_reg38_storage_bucket(auth: SupabaseAuthService | None = None) -> bool:
     repository = Regulation38Repository(auth)
     settings = repository.auth.settings
     url = f"{settings.project_url}/storage/v1/bucket/{quote(repository.bucket, safe='')}"
+    # Bucket administration is deliberately not exposed to the publishable key.
+    # Supabase can mask that authorization failure as "Bucket not found", even
+    # while an authenticated user can upload through an RLS-authorized URL.
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not service_key:
+        LOGGER.error("reg38_storage_health_failed storage_host=%s storage_bucket=%s stage=credential error=SUPABASE_SERVICE_ROLE_KEY_missing",
+                     urlparse(url).hostname, repository.bucket)
+        return False
     try:
         response = requests.get(
             url,
-            headers=repository.auth._headers(None),
+            headers={"apikey": service_key, "Authorization": f"Bearer {service_key}", "Accept": "application/json"},
             timeout=settings.request_timeout_seconds,
         )
     except requests.RequestException as exc:
@@ -137,8 +145,8 @@ class Regulation38Repository:
         """Extract bounded Storage diagnostics without reflecting credentials or tokens."""
         try:
             payload = response.json()
-        except ValueError:
-            return response.text[:1000].replace("\n", " ")
+        except (ValueError, AttributeError):
+            return str(getattr(response, "text", ""))[:1000].replace("\n", " ")
         if isinstance(payload, Mapping):
             safe = {key: payload[key] for key in ("statusCode", "error", "message") if key in payload}
             return json.dumps(safe or {"response": "Storage returned an unrecognised JSON error"}, separators=(",", ":"))[:1000]
@@ -147,6 +155,41 @@ class Regulation38Repository:
     def _data_request(self, method: str, path: str, access_token: str, **kwargs: Any) -> Any:
         return self.auth._request_json(method, f"{self.auth.settings.project_url}/rest/v1/{path}", access_token=access_token,
             public_error="Projects could not be loaded.", **kwargs)
+
+    @staticmethod
+    def _safe_data_response(response: requests.Response) -> str:
+        """Return bounded PostgREST diagnostics, excluding headers and credentials."""
+        try:
+            payload = response.json() if getattr(response, "content", None) else {}
+        except ValueError:
+            return response.text[:1000].replace("\n", " ")
+        if isinstance(payload, Mapping):
+            payload = {key: payload[key] for key in ("code", "message", "details", "hint") if key in payload}
+        return json.dumps(payload, separators=(",", ":"))[:1000]
+
+    def _completion_data_request(self, method: str, path: str, token: str, reference: str,
+                                 project_id: str, file_id: str, stage: str, **kwargs: Any) -> Any:
+        """PostgREST request with completion-specific, safe diagnostics."""
+        try:
+            response = requests.request(method, f"{self.auth.settings.project_url}/rest/v1/{path}",
+                                        headers=self.auth._headers(token),
+                                        timeout=self.auth.settings.request_timeout_seconds, **kwargs)
+        except requests.RequestException as exc:
+            LOGGER.error("ifc_upload_complete_failed stage=%s reference=%s project_id=%s model_id=%s storage_bucket=%s database_http_status=unavailable response=%s",
+                         stage, reference, project_id, file_id, self.bucket, type(exc).__name__)
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}",
+                                    status_code=503, detail=type(exc).__name__) from exc
+        safe_body = self._safe_data_response(response)
+        if not 200 <= response.status_code < 300:
+            LOGGER.error("ifc_upload_complete_failed stage=%s reference=%s project_id=%s model_id=%s storage_bucket=%s database_http_status=%s response=%s",
+                         stage, reference, project_id, file_id, self.bucket, response.status_code, safe_body)
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}",
+                                    status_code=502, detail=safe_body)
+        try:
+            return response.json() if getattr(response, "content", None) else None
+        except ValueError as exc:
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}",
+                                    status_code=502, detail="Invalid Supabase JSON response") from exc
 
     def can_create_project(self, token: str) -> bool:
         return self._data_request("POST", "rpc/can_create_project", token, json={}) is True
@@ -248,9 +291,18 @@ class Regulation38Repository:
 
     def finalize_ifc_upload(self, token: str, user_id: str, project_id: str, file_id: str,
                             filename: str, size: int, storage_path: str) -> dict[str, str]:
+        reference = str(uuid4())
         safe_name = Path(filename).name
+        stage = "started"
+        LOGGER.info("ifc_upload_complete_started reference=%s project_id=%s model_id=%s storage_bucket=%s storage_path=%s user_id=%s",
+                    reference, project_id, file_id, self.bucket, storage_path, user_id)
         validate_ifc(safe_name, size)
-        self.require_project_edit(token, project_id)
+        try:
+            self.require_project_edit(token, project_id)
+        except Exception:
+            LOGGER.exception("ifc_upload_complete_failed stage=authorization reference=%s project_id=%s model_id=%s storage_bucket=%s storage_path=%s user_id=%s",
+                             reference, project_id, file_id, self.bucket, storage_path, user_id)
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}", status_code=403)
         expected_path = f"projects/{project_id}/models/{file_id}/original/{safe_name}"
         if storage_path != expected_path:
             raise ValueError("The IFC upload details are invalid.")
@@ -259,29 +311,45 @@ class Regulation38Repository:
             stored = requests.head(object_url, headers=self.auth._headers(token),
                                    timeout=self.auth.settings.request_timeout_seconds)
         except requests.RequestException as exc:
-            LOGGER.exception("ifc_upload_verify_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s",
-                             project_id, user_id, safe_name, size, storage_path)
-            raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=503) from exc
+            LOGGER.exception("ifc_upload_complete_failed stage=storage_verify reference=%s project_id=%s model_id=%s user_id=%s storage_bucket=%s storage_path=%s storage_http_status=unavailable response=%s",
+                             reference, project_id, file_id, user_id, self.bucket, storage_path, type(exc).__name__)
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}", status_code=503) from exc
         if not 200 <= stored.status_code < 300:
-            LOGGER.error("ifc_upload_verify_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s storage_http_status=%s",
-                         project_id, user_id, safe_name, size, storage_path, stored.status_code)
-            raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=502)
+            LOGGER.error("ifc_upload_complete_failed stage=storage_verify reference=%s project_id=%s model_id=%s user_id=%s storage_bucket=%s storage_path=%s storage_http_status=%s response=%s",
+                         reference, project_id, file_id, user_id, self.bucket, storage_path, stored.status_code,
+                         self._safe_storage_response(stored))
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}", status_code=502)
         stored_size = stored.headers.get("content-length")
         if stored_size and int(stored_size) != size:
-            LOGGER.error("ifc_upload_size_mismatch project_id=%s user_id=%s filename=%s declared_size=%s stored_size=%s storage_path=%s",
-                         project_id, user_id, safe_name, size, stored_size, storage_path)
-            raise SupabaseAuthError("The IFC upload could not be confirmed.", status_code=400)
+            LOGGER.error("ifc_upload_complete_failed stage=storage_size reference=%s project_id=%s model_id=%s user_id=%s storage_bucket=%s storage_path=%s storage_http_status=%s declared_size=%s stored_size=%s",
+                         reference, project_id, file_id, user_id, self.bucket, storage_path, stored.status_code, size, stored_size)
+            raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}", status_code=400)
+        LOGGER.info("ifc_upload_complete_storage_verified reference=%s project_id=%s model_id=%s storage_bucket=%s storage_path=%s user_id=%s storage_http_status=%s",
+                    reference, project_id, file_id, self.bucket, storage_path, user_id, stored.status_code)
         job_id = str(uuid4())
         try:
-            self._data_request("POST", "rpc/finalize_ifc_upload", token, json={
+            stage = "model_update"
+            rpc_result = self._completion_data_request("POST", "rpc/finalize_ifc_upload", token, reference, project_id, file_id, stage, json={
                 "target_project": project_id, "target_file": file_id, "target_job": job_id,
                 "object_path": storage_path, "original_name": safe_name, "object_size": size})
-        except Exception:
-            requests.delete(object_url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
-            LOGGER.exception("ifc_upload_finalize_failed project_id=%s user_id=%s filename=%s file_size=%s storage_path=%s",
-                             project_id, user_id, safe_name, size, storage_path)
+            if isinstance(rpc_result, str):
+                job_id = rpc_result
+            LOGGER.info("ifc_upload_complete_model_updated reference=%s project_id=%s model_id=%s storage_bucket=%s storage_path=%s user_id=%s database_http_status=200",
+                        reference, project_id, file_id, self.bucket, storage_path, user_id)
+            stage = "project_load"
+            project_rows = self._completion_data_request("GET", f"projects?id=eq.{quote(project_id)}&select=id", token,
+                                                         reference, project_id, file_id, stage)
+            model_rows = self._completion_data_request("GET", f"ifc_files?id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}&select=id,status,storage_path", token,
+                                                       reference, project_id, file_id, stage)
+            if not project_rows or not model_rows or model_rows[0].get("storage_path") != storage_path:
+                raise SupabaseAuthError(f"IFC uploaded, but the project could not be updated. Reference: {reference}", status_code=502)
+            LOGGER.info("ifc_upload_complete_project_loaded reference=%s project_id=%s model_id=%s storage_bucket=%s storage_path=%s user_id=%s database_http_status=200",
+                        reference, project_id, file_id, self.bucket, storage_path, user_id)
+        except SupabaseAuthError:
             raise
-        return {"file_id": file_id, "job_id": job_id, "storage_path": storage_path}
+        LOGGER.info("ifc_upload_complete_success reference=%s project_id=%s model_id=%s storage_bucket=%s storage_path=%s user_id=%s",
+                    reference, project_id, file_id, self.bucket, storage_path, user_id)
+        return {"file_id": file_id, "job_id": job_id, "storage_path": storage_path, "reference": reference}
 
     def remove_ifc(self, token: str, project_id: str, file_id: str, storage_path: str) -> None:
         self.require_project_edit(token, project_id)
