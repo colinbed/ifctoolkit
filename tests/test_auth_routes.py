@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+import pytest
+
 import app as app_module
 import ifc_app.saas as saas
 import ifc_app.supabase_auth as supabase_auth
@@ -382,3 +384,59 @@ def test_member_cannot_see_create_or_open_direct_wizard(monkeypatch):
     assert "+ New Project" not in landing.text and "+ Create Project" not in landing.text
     assert "No Regulation 38 projects are currently assigned to you." in landing.text
     assert request("GET", "/app/regulation-38/projects/new", headers={"cookie": cookie}).status_code == 403
+
+
+def test_admin_user_lookup_uses_correct_endpoint_and_logs_safe_404(monkeypatch, caplog):
+    settings = supabase_auth.AuthSettings(
+        app_url="https://app.example", supabase_url="https://project.supabase.co",
+        publishable_key="publishable",
+    )
+    service = supabase_auth.SupabaseAuthService(settings)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-secret")
+    seen = {}
+
+    class Response:
+        status_code = 404
+        content = b'{"code":"user_not_found","message":"User not found"}'
+        text = content.decode()
+        def json(self): return {"code": "user_not_found", "message": "User not found"}
+
+    monkeypatch.setattr(supabase_auth.requests, "request", lambda method, url, **kwargs: (seen.update(method=method, url=url, kwargs=kwargs) or Response()))
+    user_id = "10000000-0000-4000-8000-000000000001"
+    with caplog.at_level("WARNING"), pytest.raises(supabase_auth.SupabaseAuthError):
+        service.get_user_by_id(user_id)
+    assert seen["method"] == "GET"
+    assert seen["url"] == f"https://project.supabase.co/auth/v1/admin/users/{user_id}"
+    assert f"endpoint=/auth/v1/admin/users/{user_id}" in caplog.text
+    assert f"user_id={user_id}" in caplog.text
+    assert "credential=service_role status=404" in caplog.text
+    assert "User not found" in caplog.text
+    assert "service-secret" not in caplog.text and "Authorization" not in caplog.text
+
+
+def test_finalized_ifc_model_scan_get_returns_200_without_admin_user_lookup(monkeypatch):
+    class ModelScanRouteAuth(FakeSupabaseAuth):
+        settings = type("Settings", (), {"project_url": "https://example.supabase.co"})()
+        def __init__(self): self.urls = []
+        def _request_json(self, method, url, **kwargs):
+            self.urls.append(url)
+            if "projects?id=" in url:
+                return [{"id": "project-id", "name": "Valid project", "created_by": self.user["id"]}]
+            if "project_members?" in url:
+                return [{"id": "member-id", "user_id": self.user["id"], "role": "OWNER"}]
+            if "ifc_files?" in url:
+                return [{"id": "model-id", "original_filename": "model.ifc", "file_size": 42,
+                         "status": "PROCESSED", "storage_path": "projects/project-id/models/model-id/original/model.ifc",
+                         "ifc_processing_jobs": [{"id": "job-id", "status": "SUCCEEDED", "progress_percent": 100}]}]
+            if "ifc_processing_jobs?" in url:
+                return [{"id": "job-id", "status": "SUCCEEDED", "progress_percent": 100}]
+            if "model_scan_warnings?" in url: return []
+            raise AssertionError(url)
+
+    fake = ModelScanRouteAuth()
+    cookie = _admin_cookie(monkeypatch, fake)
+    response = request("GET", "/app/regulation-38/projects/project-id/setup/model-scan",
+                       headers={"cookie": cookie})
+    assert response.status_code == 200
+    assert "Model Scan" in response.text
+    assert not any("/auth/v1/admin/" in url for url in fake.urls)

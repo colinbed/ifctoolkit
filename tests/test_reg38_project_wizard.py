@@ -204,3 +204,55 @@ def test_upload_ui_retries_finalisation_without_reupload_or_cleanup():
     assert 'closest(".retry-finalize")' in script
     assert "finalizeUpload().catch" in script
     assert "prepared && !pendingFinalization" in script
+
+
+class ModelScanAuth(FakeAuth):
+    def __init__(self, *, project=True, member=True, file=True, job=True):
+        super().__init__(); self.project = project; self.member = member; self.file = file; self.job = job
+    def _request_json(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        if "projects?id=" in url:
+            return [{"id": "project-id", "created_by": "auth-owner-id"}] if self.project else []
+        if "project_members?" in url:
+            return [{"id": "member-row-id", "user_id": "auth-user-id", "role": "EDITOR"}] if self.member else []
+        if "ifc_files?" in url:
+            return ([{"id": "model-id", "status": "PROCESSED", "storage_path": "projects/project-id/models/model-id/original/model.ifc",
+                      "ifc_processing_jobs": [{"id": "job-id", "status": "SUCCEEDED"}]}] if self.file else [])
+        if "ifc_processing_jobs?" in url:
+            return [{"id": "job-id", "status": "SUCCEEDED"}] if self.job else []
+        if "model_scan_warnings?" in url: return []
+        raise AssertionError(url)
+
+
+def test_finalized_ifc_model_scan_loads_prerequisites_without_admin_auth(caplog):
+    auth = ModelScanAuth()
+    with caplog.at_level("INFO"):
+        scan = Regulation38Repository(auth).model_scan("user-token", "project-id", "auth-user-id")
+    assert scan["file"]["status"] == "PROCESSED" and scan["job"]["status"] == "SUCCEEDED"
+    assert not any("/auth/v1/" in url for _, url, _ in auth.calls)
+    assert "authenticated_user_id=auth-user-id" in caplog.text
+    assert "created_by=auth-owner-id" in caplog.text and "member_user_ids=['auth-user-id']" in caplog.text
+    assert "model_status=PROCESSED" in caplog.text and "processing_job=present" in caplog.text
+
+
+def test_optional_user_metadata_404_cannot_affect_model_scan():
+    # Model Scan deliberately has no Admin Auth dependency: a stale/wrong UUID is
+    # merely membership diagnostic data and never looked up in auth.users.
+    auth = ModelScanAuth(member=True)
+    scan = Regulation38Repository(auth).model_scan("user-token", "project-id", "different-auth-user-id")
+    assert scan["file"]["id"] == "model-id"
+
+
+def test_model_scan_missing_project_is_the_only_repository_404():
+    with pytest.raises(module.SupabaseAuthError) as caught:
+        Regulation38Repository(ModelScanAuth(project=False)).model_scan("token", "missing", "auth-user-id")
+    assert caught.value.status_code == 404 and caught.value.public_message == "Project not found."
+
+
+def test_model_scan_unauthorized_project_access_is_403():
+    class Forbidden(ModelScanAuth):
+        def _request_json(self, method, url, **kwargs):
+            raise module.SupabaseAuthError("You cannot access this project.", status_code=403)
+    with pytest.raises(module.SupabaseAuthError) as caught:
+        Regulation38Repository(Forbidden()).model_scan("token", "project-id", "auth-user-id")
+    assert caught.value.status_code == 403
