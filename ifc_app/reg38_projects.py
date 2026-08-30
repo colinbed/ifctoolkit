@@ -4,9 +4,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
+import json
 import logging
+import os
 from typing import Any, Mapping
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import requests
@@ -27,6 +29,31 @@ MAX_IFC_BYTES = 500 * 1024 * 1024
 LOGGER = logging.getLogger("ifc_app.reg38.upload")
 ZONE_TYPES = ("FIRE_COMPARTMENT", "SMOKE_ZONE", "ALARM_ZONE", "SPRINKLER_ZONE", "EVACUATION_ZONE",
               "OCCUPANCY_ZONE", "REFUGE", "HIGH_RISK", "USER_DEFINED")
+
+
+def check_reg38_storage_bucket(auth: SupabaseAuthService | None = None) -> bool:
+    """Check Storage configuration at startup without exposing credential values."""
+    repository = Regulation38Repository(auth)
+    settings = repository.auth.settings
+    url = f"{settings.project_url}/storage/v1/bucket/{quote(repository.bucket, safe='')}"
+    try:
+        response = requests.get(
+            url,
+            headers=repository.auth._headers(None),
+            timeout=settings.request_timeout_seconds,
+        )
+    except requests.RequestException as exc:
+        LOGGER.warning("reg38_storage_health_failed storage_host=%s storage_bucket=%s error=%s",
+                       urlparse(url).hostname, repository.bucket, type(exc).__name__)
+        return False
+    if 200 <= response.status_code < 300:
+        LOGGER.info("reg38_storage_health_ok storage_host=%s storage_bucket=%s",
+                    urlparse(url).hostname, repository.bucket)
+        return True
+    LOGGER.error("reg38_storage_health_failed storage_host=%s storage_bucket=%s storage_http_status=%s storage_response=%s",
+                 urlparse(url).hostname, repository.bucket, response.status_code,
+                 repository._safe_storage_response(response))
+    return False
 
 
 @dataclass(frozen=True)
@@ -95,10 +122,27 @@ def validate_ifc(filename: str, size: int) -> None:
 
 
 class Regulation38Repository:
-    BUCKET = "project-files"
+    DEFAULT_BUCKET = "project-files"
 
     def __init__(self, auth: SupabaseAuthService | None = None):
         self.auth = auth or SupabaseAuthService()
+
+    @property
+    def bucket(self) -> str:
+        """Return the bucket id without ever accepting it as part of an object key."""
+        return os.getenv("REG38_STORAGE_BUCKET", self.DEFAULT_BUCKET).strip() or self.DEFAULT_BUCKET
+
+    @staticmethod
+    def _safe_storage_response(response: requests.Response) -> str:
+        """Extract bounded Storage diagnostics without reflecting credentials or tokens."""
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text[:1000].replace("\n", " ")
+        if isinstance(payload, Mapping):
+            safe = {key: payload[key] for key in ("statusCode", "error", "message") if key in payload}
+            return json.dumps(safe or {"response": "Storage returned an unrecognised JSON error"}, separators=(",", ":"))[:1000]
+        return json.dumps(payload, separators=(",", ":"))[:1000]
 
     def _data_request(self, method: str, path: str, access_token: str, **kwargs: Any) -> Any:
         return self.auth._request_json(method, f"{self.auth.settings.project_url}/rest/v1/{path}", access_token=access_token,
@@ -178,18 +222,22 @@ class Regulation38Repository:
         self.require_project_edit(token, project_id)
         file_id = str(uuid4())
         storage_path = f"projects/{project_id}/models/{file_id}/original/{safe_name}"
-        url = f"{self.auth.settings.project_url}/storage/v1/object/upload/sign/{self.BUCKET}/{quote(storage_path, safe='/')}"
+        url = f"{self.auth.settings.project_url}/storage/v1/object/upload/sign/{quote(self.bucket, safe='')}/{quote(storage_path, safe='/')}"
         try:
-            response = requests.post(url, headers=self.auth._headers(token), json={"upsert": False},
+            # This endpoint accepts an empty JSON object. Upsert is enabled only through
+            # x-upsert:true; sending an `upsert` JSON property is not part of its API.
+            response = requests.post(url, headers=self.auth._headers(token), json={},
                                      timeout=self.auth.settings.request_timeout_seconds)
         except requests.RequestException as exc:
             LOGGER.exception("ifc_upload_sign_failed project_id=%s filename=%s file_size=%s storage_path=%s",
                              project_id, safe_name, size, storage_path)
             raise SupabaseAuthError("The IFC upload is temporarily unavailable.", status_code=503, detail=str(exc)) from exc
         if not 200 <= response.status_code < 300:
-            LOGGER.error("ifc_upload_sign_failed project_id=%s filename=%s file_size=%s storage_path=%s storage_http_status=%s",
-                         project_id, safe_name, size, storage_path, response.status_code)
-            raise SupabaseAuthError("The IFC file could not be uploaded.", status_code=response.status_code)
+            reference = str(uuid4())
+            LOGGER.error("ifc_upload_sign_failed reference=%s project_id=%s filename=%s file_size=%s storage_host=%s storage_bucket=%s storage_path=%s storage_method=POST storage_endpoint=/storage/v1/object/upload/sign/{bucket}/{path} storage_request={} storage_headers=Accept:application/json,Content-Type:application/json storage_http_status=%s storage_response=%s",
+                         reference, project_id, safe_name, size, urlparse(url).hostname, self.bucket,
+                         storage_path, response.status_code, self._safe_storage_response(response))
+            raise SupabaseAuthError(f"Storage could not prepare this upload. Reference: {reference}", status_code=502)
         payload = response.json()
         signed_url = payload.get("signedURL") or payload.get("signedUrl") or payload.get("url")
         if not signed_url:
@@ -206,7 +254,7 @@ class Regulation38Repository:
         expected_path = f"projects/{project_id}/models/{file_id}/original/{safe_name}"
         if storage_path != expected_path:
             raise ValueError("The IFC upload details are invalid.")
-        object_url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
+        object_url = f"{self.auth.settings.project_url}/storage/v1/object/{quote(self.bucket, safe='')}/{quote(storage_path, safe='/')}"
         try:
             stored = requests.head(object_url, headers=self.auth._headers(token),
                                    timeout=self.auth.settings.request_timeout_seconds)
@@ -242,7 +290,7 @@ class Regulation38Repository:
             raise ValueError("The IFC file path is invalid.")
         self._data_request("DELETE", f"ifc_processing_jobs?ifc_file_id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}&status=eq.QUEUED", token)
         self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}", token)
-        url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
+        url = f"{self.auth.settings.project_url}/storage/v1/object/{quote(self.bucket, safe='')}/{quote(storage_path, safe='/')}"
         requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
 
     def cleanup_failed_upload(self, token: str, project_id: str, storage_path: str) -> None:
@@ -250,7 +298,7 @@ class Regulation38Repository:
         self.require_project_edit(token, project_id)
         if not storage_path.startswith(f"projects/{project_id}/models/") or "/original/" not in storage_path:
             raise ValueError("The IFC file path is invalid.")
-        url = f"{self.auth.settings.project_url}/storage/v1/object/{self.BUCKET}/{quote(storage_path, safe='/')}"
+        url = f"{self.auth.settings.project_url}/storage/v1/object/{quote(self.bucket, safe='')}/{quote(storage_path, safe='/')}"
         requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
 
     def project_role(self, token: str, project_id: str) -> str | None:

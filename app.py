@@ -6312,6 +6312,9 @@ def _log_area_spaces_route_registration() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_auth_environment(APP_LOGGER)
+    if not missing_auth_environment():
+        from ifc_app.reg38_projects import check_reg38_storage_bucket
+        threading.Thread(target=check_reg38_storage_bucket, name="reg38-storage-health", daemon=True).start()
     startup_cleanup()
     _log_session_route_registration()
     _log_area_spaces_route_registration()
