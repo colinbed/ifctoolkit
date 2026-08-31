@@ -8,7 +8,7 @@ app_port: 8000
 pinned: false
 ---
 
-# IFC Toolkit
+# IFC Toolkit.
 
 **Practical tools, better compliance.**
 
