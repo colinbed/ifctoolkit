@@ -41,6 +41,26 @@ apply_all() {
 bootstrap "${DB_PREFIX}_fresh"
 apply_all "${DB_PREFIX}_fresh"
 
+# Reproduce the production failure against PostgreSQL itself. Two input rows hit
+# the same conflict identity in one command, so PostgreSQL must reject the batch
+# with the exact cardinality-violation message observed in production.
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fresh" <<'SQL' >/dev/null
+do $$
+begin
+  create temporary table duplicate_upsert_reproduction(id integer primary key, value text);
+  insert into duplicate_upsert_reproduction values (1, 'existing');
+  begin
+    insert into duplicate_upsert_reproduction values (1, 'first'), (1, 'second')
+      on conflict (id) do update set value=excluded.value;
+    raise exception 'expected duplicate upsert to fail';
+  exception when cardinality_violation then
+    if sqlerrm <> 'ON CONFLICT DO UPDATE command cannot affect row a second time' then
+      raise exception 'unexpected PostgreSQL error: %', sqlerrm;
+    end if;
+  end;
+end $$;
+SQL
+
 bootstrap "${DB_PREFIX}_legacy"
 for migration in "$ROOT"/supabase/migrations/20260828000{0,1}_*.sql; do
   psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_legacy" -f "$migration" >/dev/null
