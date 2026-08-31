@@ -414,6 +414,31 @@ def test_admin_user_lookup_uses_correct_endpoint_and_logs_safe_404(monkeypatch, 
     assert "service-secret" not in caplog.text and "Authorization" not in caplog.text
 
 
+def test_postgrest_failure_uses_data_log_label(monkeypatch, caplog):
+    settings = supabase_auth.AuthSettings(
+        app_url="https://app.example", supabase_url="https://project.supabase.co",
+        publishable_key="publishable",
+    )
+    service = supabase_auth.SupabaseAuthService(settings)
+
+    class Response:
+        status_code = 404
+        content = b'{"code":"PGRST205","message":"table missing"}'
+        text = content.decode()
+        def json(self): return {"code": "PGRST205", "message": "table missing"}
+
+    monkeypatch.setattr(supabase_auth.requests, "request", lambda *args, **kwargs: Response())
+    with caplog.at_level("WARNING"), pytest.raises(supabase_auth.SupabaseAuthError):
+        service._request_json(
+            "GET", "https://project.supabase.co/rest/v1/model_scan_warnings",
+            access_token="user-token", public_error="Projects could not be loaded.",
+        )
+    assert "supabase_data_request_failed" in caplog.text
+    assert "endpoint=/rest/v1/model_scan_warnings" in caplog.text
+    assert "PGRST205" in caplog.text
+    assert "supabase_auth_request_failed" not in caplog.text
+
+
 def test_finalized_ifc_model_scan_get_returns_200_without_admin_user_lookup(monkeypatch):
     class ModelScanRouteAuth(FakeSupabaseAuth):
         settings = type("Settings", (), {"project_url": "https://example.supabase.co"})()
