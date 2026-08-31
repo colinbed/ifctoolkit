@@ -6,6 +6,7 @@ worker.  The source file is opened read-only and is never written by this module
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -71,6 +72,19 @@ def parse_fire_rating(value: Any) -> tuple[int | None, bool]:
 
 def _id(file_id: str, kind: str, identity: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"reg38:{file_id}:{kind}:{identity}"))
+
+
+def _fire_identity(file_id: str, object_id: str, requirement: str, prop: dict[str, Any]) -> str:
+    """Return the canonical identity of one source fire finding.
+
+    JSON avoids delimiter ambiguity while retaining every source coordinate that
+    can distinguish two properties on the same IFC object.
+    """
+    return json.dumps([
+        file_id, object_id, requirement, prop["source_scope"],
+        prop.get("property_set"), prop["property_name"],
+        prop.get("property_value_text"),
+    ], ensure_ascii=False, separators=(",", ":"))
 
 
 def _safe_by_type(model: Any, entity: str) -> list[Any]:
@@ -328,6 +342,8 @@ class Regulation38IfcProcessor:
                             "metadata": {"ifc_relationship_global_id": getattr(rel, "GlobalId", None), "step_id": rel.id()}})
 
     def _fire(self, result, project_id, file_id, by_object):
+        emitted: set[str] = set()
+        object_types = {row["id"]: row["ifc_entity"] for row in result.tables["ifc_objects"]}
         for oid, properties in by_object.items():
             candidates = []
             for prop in properties:
@@ -343,8 +359,13 @@ class Regulation38IfcProcessor:
                 raw = prop.get("property_value_text")
                 if raw is None or not str(raw).strip(): continue
                 minutes, smoke = parse_fire_rating(raw)
-                row = {"id": _id(file_id, "fire", f"{oid}:{len(result.tables['fire_requirements'])}"), "project_id": project_id,
-                       "ifc_object_id": oid, "object_type": next(o["ifc_entity"] for o in result.tables["ifc_objects"] if o["id"] == oid),
+                identity = _fire_identity(file_id, oid, requirement, prop)
+                finding_key = _id(file_id, "fire-finding", identity)
+                if finding_key in emitted:
+                    continue
+                emitted.add(finding_key)
+                row = {"id": finding_key, "source_finding_key": finding_key, "project_id": project_id,
+                       "ifc_object_id": oid, "object_type": object_types[oid],
                        "requirement_type": requirement, "required_value_text": str(raw), "required_minutes": minutes,
                        "source_type": source, "source_property_set": prop.get("property_set"), "source_property_name": prop["property_name"],
                        "source_property_value": str(raw), "confidence": confidence, "review_status": "UNREVIEWED",

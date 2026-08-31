@@ -104,3 +104,38 @@ def test_lease_guard_prevents_an_old_worker_updating_reclaimed_job(monkeypatch):
     sink = worker.SupabaseBatchSink("https://example.test", "secret")
     with pytest.raises(worker.LostLeaseError):
         sink.update_job(JOB, progress_percent=50)
+
+
+def test_result_tables_use_explicit_retry_conflict_targets(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="reg38.worker")
+    class Response:
+        ok, content, status_code, text = True, b"", 201, ""
+        def raise_for_status(self): pass
+
+    calls = []
+    monkeypatch.setattr(worker.requests, "post",
+                        lambda url, **kwargs: calls.append((url, kwargs)) or Response())
+    sink = worker.SupabaseBatchSink("https://example.test", "secret", batch_size=10)
+    sink.insert_result({"fire_requirements": [
+        {"id": "one", "source_finding_key": "one"},
+        {"id": "two", "source_finding_key": "two"},
+    ]})
+    assert calls[0][0].endswith(
+        "/fire_requirements?on_conflict=project_id,ifc_object_id,requirement_type,source_scope,"
+        "source_property_set,source_property_name,source_property_value,source_type")
+    assert calls[0][1]["headers"]["Prefer"] == "resolution=merge-duplicates,return=minimal"
+    assert '"unique_ids":2,"duplicate_id_count":0' in caplog.text
+
+
+def test_failed_postgrest_response_is_logged_before_raise(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="reg38.worker")
+    class Response:
+        ok, content, status_code, text = False, b'{"message":"cardinality"}', 400, '{"message":"cardinality"}'
+        def raise_for_status(self): raise RuntimeError("HTTP 400")
+
+    monkeypatch.setattr(worker.requests, "post", lambda *args, **kwargs: Response())
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        worker.SupabaseBatchSink("https://example.test", "secret").insert_result(
+            {"fire_requirements": [{"id": "same", "source_finding_key": "same"}]})
+    assert '"response_status":400' in caplog.text
+    assert "cardinality" in caplog.text

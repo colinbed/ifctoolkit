@@ -17,6 +17,14 @@ is optional and defaults to `3`. `REG38_WORKER_STALE_SECONDS` controls lease
 recovery and defaults to `3600` (minimum 300). Apply migration
 `202608310003_reg38_worker_execution.sql` before starting the service.
 
+For worker releases containing deterministic fire-finding identities, apply
+`202608310004_fire_requirement_finding_identity.sql` **before** deploying or
+restarting the worker. PostgREST must see the new `source_finding_key` column
+and logical unique index; reload its schema cache if the Supabase deployment
+does not do so automatically. After the migration and worker deploy, **Retry
+Scan** is safe for an IFC that previously failed: all extracted result tables
+use an explicit deterministic or logical upsert target.
+
 In Railway, create a second service from the same repository/Dockerfile, override
 its Start Command with `python -m backend.reg38_ifc_worker`, and do not configure
 an HTTP health check for that worker. Keep the web service command as Uvicorn.
