@@ -1,6 +1,6 @@
 # Regulation 38 IFC processing
 
-Uploaded models remain immutable in the private `reg38-evidence` bucket. The web
+Uploaded models remain immutable in the private `project-files` bucket. The web
 request creates an `ifc_files` row and a queued `ifc_processing_jobs` row; it does
 not parse IFC in the browser or request process.
 
@@ -11,10 +11,21 @@ download a temporary read-only source copy, and pass it to
 table-shaped batches. The sink sends at most one PostgREST request per 1,000 rows,
 in foreign-key order. A temporary source copy is deleted after each job.
 
-Progress is reported through `current_step` as `UPLOADED`, `VALIDATING_IFC`,
+Progress is reported through `current_step` as `UPLOADED`, `VALIDATING_IFC`, `IFC_OPENED`,
 `EXTRACTING_SPATIAL_STRUCTURE`, `EXTRACTING_OBJECTS`, `EXTRACTING_PROPERTIES`,
 `EXTRACTING_RELATIONSHIPS`, `SCANNING_FIRE_PROPERTIES`, `PREPARING_PLAN_DATA`, and
 `COMPLETE` (or `FAILED`), with a percentage and scan statistics.
+
+## Architecture audit
+
+The extractor and worker implementation already existed, but the repository's
+Railway configuration starts only Uvicorn. Consequently no process invoked the
+worker loop and production jobs remained queued. Model Scan remains a read-only
+polling page: it never downloads or parses an IFC. Production must deploy the
+dedicated worker service described in `reg38-worker-deployment.md` alongside the
+web service. The worker now uses an atomic database claim, renewable lease token,
+service-role private Storage download, stale lease recovery, deterministic
+IfcOpenShell extraction, canonical-table writes, and terminal job/file updates.
 
 ## Example model-scan statistics
 

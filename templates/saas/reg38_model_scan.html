@@ -3,9 +3,14 @@
   <h3>Regulation 38 Model Scan</h3>
   {% if not job %}<p>No uploaded IFC is ready to scan.</p>
   {% elif job.status in ['QUEUED','RUNNING'] %}
-    <p><strong>Processing IFC...</strong></p>
+    <p><strong>{% if job.status == 'QUEUED' %}Waiting for processing worker{% else %}Processing IFC...{% endif %}</strong></p>
     <div class="upload-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ job.progress_percent }}"><i style="width:{{ job.progress_percent }}%"></i></div>
     <p>{{ job.progress_percent }}% · Current step: {{ (job.current_step or 'QUEUED')|replace('_',' ')|title }}</p>
+    <p id="scan-stalled" class="error" hidden>The processing worker has not completed this scan. It may be stalled; please contact support or retry once the job is marked failed.</p>
+    <script>
+      const queuedAt = Date.parse({{ job.created_at|default('', true)|tojson }});
+      if (Number.isFinite(queuedAt) && Date.now() - queuedAt > 15 * 60 * 1000) document.getElementById('scan-stalled').hidden = false;
+    </script>
     <script>window.setTimeout(() => window.location.reload(), 4000);</script>
   {% elif job.status == 'FAILED' %}
     <p class="error"><strong>Model scan failed</strong></p><p>The IFC was uploaded successfully but could not be processed.</p>

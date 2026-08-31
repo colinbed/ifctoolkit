@@ -19,7 +19,7 @@ import ifcopenshell.util.placement
 
 
 STAGES = (
-    "UPLOADED", "VALIDATING_IFC", "EXTRACTING_SPATIAL_STRUCTURE", "EXTRACTING_OBJECTS",
+    "UPLOADED", "VALIDATING_IFC", "IFC_OPENED", "EXTRACTING_SPATIAL_STRUCTURE", "EXTRACTING_OBJECTS",
     "EXTRACTING_PROPERTIES", "EXTRACTING_RELATIONSHIPS", "SCANNING_FIRE_PROPERTIES",
     "PREPARING_PLAN_DATA", "COMPLETE",
 )
@@ -176,6 +176,7 @@ class Regulation38IfcProcessor:
         self.progress("VALIDATING_IFC", 5, {})
         model = ifcopenshell.open(str(path))
         schema = model.schema
+        self.progress("IFC_OPENED", 10, {"ifc_schema": schema})
         objects: list[Any] = []
         seen = set()
         for kind in ENTITY_TYPES:
