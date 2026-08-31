@@ -4,10 +4,6 @@
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('project-files', 'project-files', false, 524288000, null)
 on conflict (id) do update set public=false, file_size_limit=524288000, allowed_mime_types=null;
--- The superseded bucket was introduced by an earlier unreleased migration.
--- Remove it only when empty; never destroy an existing object during rollout.
-delete from storage.buckets b where b.id='reg38-evidence'
-  and not exists(select 1 from storage.objects o where o.bucket_id=b.id);
 
 create or replace function public.storage_project_id(object_name text) returns uuid
 language plpgsql immutable set search_path=public as $$

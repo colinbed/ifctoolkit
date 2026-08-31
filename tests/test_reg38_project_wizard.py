@@ -183,6 +183,8 @@ def test_wizard_migration_allows_only_unprocessed_removal_and_private_storage_pa
 def test_project_files_migration_is_private_project_scoped_and_atomic():
     sql = open("supabase/migrations/202608280008_project_files_and_model_scan.sql", encoding="utf-8").read().lower()
     assert "'project-files', 'project-files', false, 524288000" in sql
+    assert "delete from storage." not in sql
+    assert "reg38-evidence" not in sql
     assert "public.is_project_member(public.storage_project_id(name))" in sql
     assert "public.can_edit_project(public.storage_project_id(name))" in sql
     assert "models/%s/original/%s" in sql
