@@ -198,6 +198,39 @@ def test_completion_recovery_is_idempotent_and_audits_schema():
         assert name in sql
 
 
+def test_model_scan_recovery_creates_complete_warning_relation_and_audits_it():
+    sql = open(
+        "supabase/migrations/202608310001_model_scan_warnings_recovery.sql",
+        encoding="utf-8",
+    ).read().lower()
+    assert "create table if not exists public.model_scan_warnings" in sql
+    for dependency in ("public.projects", "public.ifc_files", "public.ifc_objects",
+                       "public.project_spaces", "public.project_zones", "auth.users"):
+        assert f"references {dependency}" in sql
+    assert "model_scan_warnings_project_idx" in sql
+    assert "enable row level security" in sql
+    assert "model_scan_warnings_select" in sql and "model_scan_warnings_review" in sql
+    health = sql.split("create or replace function public.reg38_schema_health()", 1)[1]
+    for table in ("projects", "project_members", "ifc_files", "ifc_processing_jobs",
+                  "model_scan_warnings"):
+        assert f"('{table}')" in health
+    assert "to_regclass('public.' || name) is null" in health
+
+
+def test_schema_health_represents_missing_model_scan_warnings():
+    """The SQL health contract names a missing relation exactly as startup reports it."""
+    sql = open(
+        "supabase/migrations/202608310001_model_scan_warnings_recovery.sql",
+        encoding="utf-8",
+    ).read().lower()
+    required = {name for name in ("projects", "project_members", "reg38_project_scope",
+                                  "reg38_sections", "ifc_files", "ifc_processing_jobs",
+                                  "model_scan_warnings") if f"('{name}')" in sql}
+    existing = required - {"model_scan_warnings"}
+    missing = sorted(f"table:{name}" for name in required - existing)
+    assert missing == ["table:model_scan_warnings"]
+
+
 def test_upload_ui_retries_finalisation_without_reupload_or_cleanup():
     script = open("static/reg38-ifc-upload.js", encoding="utf-8").read()
     assert "IFC uploaded, but the project could not be updated." in script

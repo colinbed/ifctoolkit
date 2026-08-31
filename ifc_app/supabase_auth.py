@@ -188,10 +188,17 @@ class SupabaseAuthService:
             # Only selected provider fields are recorded, bounded to prevent log
             # injection. Request/response headers and credentials are never logged.
             safe_response = self._safe_auth_response(payload, response)
+            # Auth and PostgREST share this transport, but data-plane failures
+            # must not be reported as authentication failures.
+            failure_label = (
+                "supabase_data_request_failed"
+                if endpoint.startswith("/rest/v1/")
+                else "supabase_auth_request_failed"
+            )
             LOGGER.warning(
-                "supabase_auth_request_failed method=%s endpoint=%s user_id=%s credential=%s "
+                "%s method=%s endpoint=%s user_id=%s credential=%s "
                 "status=%s response=%s reference=%s",
-                method.upper(), endpoint, user_id or "unknown", credential,
+                failure_label, method.upper(), endpoint, user_id or "unknown", credential,
                 response.status_code, safe_response, reference,
             )
             raise SupabaseAuthError(public_error, status_code=response.status_code, detail=detail)
