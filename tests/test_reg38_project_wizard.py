@@ -217,6 +217,40 @@ def test_model_scan_recovery_creates_complete_warning_relation_and_audits_it():
     assert "to_regclass('public.' || name) is null" in health
 
 
+def test_model_scan_reconciliation_covers_worker_dependencies_and_health_contract():
+    sql = open(
+        "supabase/migrations/202608310002_reg38_model_scan_schema_reconciliation.sql",
+        encoding="utf-8",
+    ).read().lower()
+    assert "create table if not exists public.ifc_objects" in sql
+    assert "create table if not exists public.model_scan_warnings" in sql
+    assert "model_scan_warnings_file_idx" in sql
+    for policy in ("ifc_objects_select", "ifc_objects_insert",
+                   "model_scan_warnings_select", "model_scan_warnings_review"):
+        assert f"drop policy if exists {policy}" in sql
+        assert f"create policy {policy}" in sql
+    for table in ("buildings", "building_storeys", "ifc_objects", "ifc_object_properties",
+                  "ifc_object_relationships", "project_spaces", "project_zones",
+                  "project_zone_members", "project_grids", "project_grid_axes",
+                  "fire_requirements", "model_scan_warnings"):
+        assert f"('{table}')" in sql
+    assert "information_schema.columns" in sql
+    assert "('ifc_objects','ifc_file_id')" in sql
+    assert "('model_scan_warnings','warning_code')" in sql
+    assert "case tg_table_name" in sql
+    assert "when 'ifc_files', 'reg38_evidence'" in sql
+
+
+def test_repository_migration_chain_owns_profiles_prerequisite():
+    sql = open(
+        "supabase/migrations/202608280000_profiles_foundation.sql",
+        encoding="utf-8",
+    ).read().lower()
+    assert "create table if not exists public.profiles" in sql
+    assert "references auth.users(id) on delete cascade" in sql
+    assert "enable row level security" in sql
+
+
 def test_schema_health_represents_missing_model_scan_warnings():
     """The SQL health contract names a missing relation exactly as startup reports it."""
     sql = open(
