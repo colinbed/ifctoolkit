@@ -13,7 +13,13 @@ python -m backend.reg38_ifc_worker
 
 Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` on the worker only. The
 service-role key must never be exposed to the browser. `REG38_WORKER_POLL_SECONDS`
-is optional and defaults to `3`.
+is optional and defaults to `3`. `REG38_WORKER_STALE_SECONDS` controls lease
+recovery and defaults to `3600` (minimum 300). Apply migration
+`202608310003_reg38_worker_execution.sql` before starting the service.
+
+In Railway, create a second service from the same repository/Dockerfile, override
+its Start Command with `python -m backend.reg38_ifc_worker`, and do not configure
+an HTTP health check for that worker. Keep the web service command as Uvicorn.
 
 ## Runtime sizing
 
