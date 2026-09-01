@@ -415,6 +415,8 @@ def test_every_canonical_firetrace_wizard_route_renders_and_navigation_exists(mo
         "file": None, "job": None, "warnings": []})
     monkeypatch.setattr(repository, "spatial_review", lambda self, token, project_id: {
         "spaces": [], "zones": [], "grids": [], "members": [], "can_admin": True})
+    monkeypatch.setattr(repository, "fire_strategy", lambda self, token, project_id, user_id: {
+        "ready": False, "error": "Model Scan data is missing."})
     monkeypatch.setattr(repository, "firetrace_progress", lambda self, token, project:
                         FireTraceProgress("scope", frozenset({"details"}), frozenset({"details", "scope"})))
     monkeypatch.setattr(repository, "get_scope", lambda self, token, project_id: None)
@@ -424,7 +426,7 @@ def test_every_canonical_firetrace_wizard_route_renders_and_navigation_exists(mo
         assert response.status_code == 200, slug
         if index > 1:
             assert firetrace_wizard_url("project-id", index - 1) in response.text
-        if index < len(FIRETRACE_WIZARD_STEPS) and index not in {1, 2, 3, 4, 5}:
+        if index < len(FIRETRACE_WIZARD_STEPS) and index not in {1, 2, 3, 4, 5, 6}:
             assert firetrace_wizard_url("project-id", index + 1) in response.text
 
 

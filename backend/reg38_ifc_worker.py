@@ -107,14 +107,14 @@ class SupabaseBatchSink:
             if table == "project_spaces" and rows:
                 ids = ",".join(str(row["id"]) for row in rows)
                 existing = self._request("GET", "rest/v1/project_spaces?"
-                    f"id=in.({ids})&select=id,name,description,occupancy_type,occupancy_capacity,high_risk,"
-                    "included_in_reg38,working_geometry") or []
+                    f"id=in.({ids})&select=id,space_number,name,description,occupancy_type,occupancy_capacity,high_risk,"
+                    "included_in_reg38,working_geometry,working_fields_edited") or []
                 working = {str(row["id"]): row for row in existing}
-                curated = ("name", "description", "occupancy_type", "occupancy_capacity",
+                curated = ("space_number", "name", "description", "occupancy_type", "occupancy_capacity",
                            "high_risk", "included_in_reg38", "working_geometry")
                 for row in rows:
                     previous = working.get(str(row["id"]))
-                    if previous:
+                    if previous and previous.get("working_fields_edited"):
                         row.update({key: previous.get(key) for key in curated})
             elif table == "model_scan_warnings" and rows:
                 ids = ",".join(str(row["id"]) for row in rows)

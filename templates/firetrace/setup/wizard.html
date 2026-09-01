@@ -45,6 +45,8 @@
       {% include "saas/reg38_model_scan.html" %}
     {% elif step == 5 %}
       {% include "saas/reg38_spatial_review.html" %}
+    {% elif step == 6 %}
+      {% include "saas/reg38_fire_strategy.html" %}
     {% else %}<div class="pending"><span>{{ step }}</span><h3>{{ steps[step-1] }}</h3><p>Model processing has not yet been implemented.</p></div><div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[step-1] }}">Back</a>{% if step < steps|length %}<a class="button" href="{{ wizard_routes[step+1] }}">Next</a>{% else %}<a class="button" href="/app/firetrace/projects/{{ project_id }}">Return to project</a>{% endif %}</div>{% endif %}
   </div>
 </section>

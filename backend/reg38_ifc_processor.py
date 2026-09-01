@@ -538,8 +538,12 @@ class Regulation38IfcProcessor:
             c = geometry.get("centroid") or _centroid(obj) or {}
             result.tables["project_spaces"].append({"id": sid, "project_id": project_id, "building_id": building_ids[building.GlobalId],
                 "storey_id": storey_ids[storey.GlobalId], "source_ifc_object_id": oid, "ifc_global_id": obj.GlobalId,
-                "source_kind": "IFC_SPACE", "space_number": getattr(obj, "Tag", None), "name": getattr(obj, "Name", None) or "Unnamed space",
-                "long_name": getattr(obj, "LongName", None), "description": getattr(obj, "Description", None),
+                # Canonical application mapping: IfcSpace.Name is the room number
+                # and IfcSpace.LongName is its descriptive name.  Tag remains
+                # available on the immutable ifc_objects source record.
+                "source_kind": "IFC_SPACE", "space_number": getattr(obj, "Name", None),
+                "name": getattr(obj, "LongName", None) or "", "long_name": getattr(obj, "LongName", None),
+                "description": getattr(obj, "Description", None),
                 "gross_area": quantity(("GrossFloorArea",)), "net_area": quantity(("NetFloorArea",)),
                 "height": quantity(("Height", "FinishCeilingHeight", "GrossHeight")), "volume": quantity(("GrossVolume", "NetVolume")),
                 "centroid_x": c.get("x"), "centroid_y": c.get("y"), "centroid_z": c.get("z"),
