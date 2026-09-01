@@ -85,6 +85,7 @@ from backend.ifc_qa.config_loader import (
 )
 from backend.ifc_jobs import create_job as create_ifc_job, get_job as get_ifc_job, update_job as update_ifc_job
 from backend.excel_jobs import ExcelJobStore
+from backend.excel_proxy_mapping import build_mapping_plan
 from backend.ifc_file_size_reducer import (
     IfcFileSizeReducerError,
     analyze_ifc_file,
@@ -2390,6 +2391,9 @@ def update_ifc_from_excel(
     *,
     session_id: Optional[str] = None,
     endpoint: str = "excel/update",
+    proxy_mapping_repository: Optional[Any] = None,
+    proxy_mapping_inference: Optional[Callable[[Any, Any], Optional[str]]] = None,
+    proxy_mapping_scope: Optional[Dict[str, str]] = None,
 ):
     started_at = time.monotonic()
     ifc_path = path_of(ifc_file)
@@ -2408,6 +2412,7 @@ def update_ifc_from_excel(
     log_memory_stage(stage="IFC file open", session_id=session_id, file_name=os.path.basename(ifc_path), file_size=file_size, endpoint=endpoint, started_at=started_at)
     _check_heavy_timeout(started_at, endpoint)
 
+    APP_LOGGER.info("IFC_WRITE_STAGE stage=Reading workbook")
     xls = pd.ExcelFile(xls_path)
     required_sheets = {"Elements", "Properties", "COBieMapping", "ProjectData"}
     missing_sheets = sorted(required_sheets - set(xls.sheet_names))
@@ -2638,6 +2643,38 @@ def update_ifc_from_excel(
                 return None
         return None
 
+    # Phase 1: resolve every class decision before any per-element mutation.
+    # Inference is intentionally conservative here; explicit workbook values
+    # remain the only automatic class-changing signal in this workflow.
+    APP_LOGGER.info("IFC_WRITE_STAGE stage=Building mapping plan")
+    mapping_inputs = []
+    for row_idx, row in elements_df.iterrows():
+        element = _lookup_by_row(row)
+        if element is not None:
+            mapping_inputs.append((row_idx, row, element))
+    mapping_plan, mapping_metrics = build_mapping_plan(
+        mapping_inputs,
+        entity_is_valid=_schema_has_entity,
+        predefined_is_valid=lambda _entity, _predefined: True,
+        infer=proxy_mapping_inference or (lambda _signature, _row: None),
+        repository=proxy_mapping_repository,
+        scope=proxy_mapping_scope or {
+            "session": session_id or "",
+            "model": os.path.basename(ifc_path),
+            "protocol": endpoint,
+        },
+    )
+    mapping_by_row = {item.row_index: item for item in mapping_plan}
+    APP_LOGGER.info(
+        "PROXY_MAPPING_PLAN rows=%d unique_signatures=%d explicit_excel=%d "
+        "existing_mapping=%d inferred=%d fallback=%d elapsed_s=%.3f",
+        mapping_metrics["rows"], mapping_metrics["unique_signatures"],
+        mapping_metrics["explicit_excel_entity"], mapping_metrics["existing_proxy_mapping"],
+        mapping_metrics["inferred_mapping"], mapping_metrics["unchanged_fallback"],
+        mapping_metrics["elapsed_s"],
+    )
+    APP_LOGGER.info("IFC_WRITE_STAGE stage=Applying element updates")
+
     def _apply_entity_predefined_updates(rows_df: pd.DataFrame, expected_kind: str) -> None:
         if rows_df is None or rows_df.empty:
             return
@@ -2649,7 +2686,8 @@ def update_ifc_from_excel(
                 continue
             apply_change = str(clean_value(row.get("ApplyChange")) or "").strip().lower() in {"yes", "y", "true", "1"}
             current_entity = str(clean_value(row.get("CurrentEntity")) or target.is_a())
-            requested_entity = str(clean_value(row.get("TargetEntity")) or current_entity)
+            planned = mapping_by_row.get(row_idx) if expected_kind == "occurrence" else None
+            requested_entity = planned.resolved_target_entity if planned else str(clean_value(row.get("TargetEntity")) or current_entity)
             current_predef = str(clean_value(row.get("CurrentPredefinedType")) or getattr(target, "PredefinedType", "") or "")
             requested_predef_raw = clean_value(row.get("TargetPredefinedType"))
             requested_predef = str(requested_predef_raw if requested_predef_raw is not None else current_predef)
@@ -2665,6 +2703,16 @@ def update_ifc_from_excel(
                 "FromPredefinedType": current_predef,
                 "ToPredefinedType": requested_predef,
             }
+            if (planned and planned.resolution_source == "unchanged_fallback"
+                    and planned.explicit_target_entity
+                    and planned.explicit_target_entity != current_entity):
+                result["ToEntity"] = planned.explicit_target_entity
+                result.update({"Status": "Rejected", "Message": "Invalid mapping: target entity or predefined type not safe for schema"})
+                rows_df.at[row_idx, "Validation"] = "Invalid mapping"
+                change_log_rows.append(result)
+                APP_LOGGER.warning("Unsafe class mapping preserved source GlobalId=%s requested=%s schema=%s",
+                                   planned.global_id, planned.explicit_target_entity, schema_name)
+                continue
             if not _schema_has_entity(requested_entity):
                 result.update({"Status": "Rejected", "Message": "Invalid mapping: target entity not in schema"})
                 rows_df.at[row_idx, "Validation"] = "Invalid mapping"
@@ -2743,7 +2791,8 @@ def update_ifc_from_excel(
     _apply_entity_predefined_updates(elements_df, "occurrence")
     _apply_entity_predefined_updates(types_df, "type")
 
-    for _, row in elements_df.iterrows():
+    total_element_rows = len(elements_df)
+    for processed, (_, row) in enumerate(elements_df.iterrows(), 1):
         guid = row.get("GlobalId")
         if pd.isna(guid):
             continue
@@ -2786,13 +2835,10 @@ def update_ifc_from_excel(
                 ifcopenshell.api.run("type.assign_type", ifc, related_objects=[elem], relating_type=type_obj)
             elif type_obj:
                 type_obj.Name = type_name
-        class_candidate, source = _resolve_class_mapping_candidate(elem, row)
-        APP_LOGGER.info(
-            "Class mapping candidate for %s resolved to %s via %s",
-            getattr(elem, "GlobalId", ""),
-            class_candidate,
-            source,
-        )
+        if processed % 1000 == 0 or processed == total_element_rows:
+            APP_LOGGER.info("IFC_WRITE_PROGRESS processed=%d total=%d percent=%.1f",
+                            processed, total_element_rows,
+                            100.0 * processed / total_element_rows if total_element_rows else 100.0)
 
     log_memory_stage(stage="row iteration/update", session_id=session_id, file_name=os.path.basename(ifc_path), file_size=file_size, endpoint=endpoint, started_at=started_at)
     _check_heavy_timeout(started_at, endpoint)
@@ -2936,6 +2982,7 @@ def update_ifc_from_excel(
         change_log_rows.extend(protocol_change_rows)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    APP_LOGGER.info("IFC_WRITE_STAGE stage=Writing IFC")
     APP_LOGGER.info("IFC_WRITEBACK_WRITE_STARTED output=%s", os.path.basename(output_path))
     ifc.write(output_path)
     log_memory_stage(stage="IFC write/export", session_id=session_id, file_name=os.path.basename(output_path), file_size=os.path.getsize(output_path), endpoint=endpoint, started_at=started_at)
@@ -2945,6 +2992,7 @@ def update_ifc_from_excel(
         if not valid_en_entities:
             raise ValueError(validation_message)
 
+    APP_LOGGER.info("IFC_WRITE_STAGE stage=Validating output")
     APP_LOGGER.info("IFC_WRITEBACK_VERIFICATION_STARTED output=%s", os.path.basename(output_path))
     if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
         raise ValueError("Output verification failed: IFC file is missing or empty.")
@@ -2984,6 +3032,7 @@ def update_ifc_from_excel(
             pd.DataFrame(change_log_rows).to_excel(writer, sheet_name="ChangeLog", index=False)
     if gc is not None:
         gc.collect()
+    APP_LOGGER.info("IFC_WRITE_STAGE stage=Completed")
     return {"output_path": output_path, "warnings": findings["warnings"], "errors": [],
             "message": "IFC updated successfully."}
 
