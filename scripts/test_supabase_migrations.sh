@@ -11,6 +11,7 @@ DB_PREFIX="reg38_migration_test_$$"
 cleanup() {
   "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_fresh" >/dev/null
   "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_legacy" >/dev/null
+  "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_lifecycle_legacy" >/dev/null
   "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_fire_drift" >/dev/null
 }
 trap cleanup EXIT
@@ -77,6 +78,20 @@ done
 psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_legacy" \
   -f "$ROOT/tests/sql/assert_reg38_legacy_preserved.sql" >/dev/null
 
+# Reproduce an unrecorded local lifecycle deployment whose columns, audit table,
+# and RLS policy already exist. The migration must apply and replay successfully.
+bootstrap "${DB_PREFIX}_lifecycle_legacy"
+for migration in "$ROOT"/supabase/migrations/*.sql; do
+  [[ "$migration" > "$ROOT/supabase/migrations/202609010001_fire_strategy_review.sql" ]] && break
+  psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_lifecycle_legacy" -f "$migration" >/dev/null
+done
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_lifecycle_legacy" \
+  -f "$ROOT/tests/sql/reg38_lifecycle_legacy_schema.sql" >/dev/null
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_lifecycle_legacy" \
+  -f "$ROOT/supabase/migrations/202609010001_reg38_ifc_lifecycle.sql" >/dev/null
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_lifecycle_legacy" \
+  -f "$ROOT/supabase/migrations/202609010001_reg38_ifc_lifecycle.sql" >/dev/null
+
 # Reproduce the exact production history collision: the lifecycle file with
 # version 202609010001 was applied, while Supabase skipped the later Fire
 # Strategy file carrying the same version. The new reconciliation must repair
@@ -94,4 +109,4 @@ psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fire_drift" \
 psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fire_drift" \
   -f "$ROOT/tests/sql/assert_fire_strategy_reconciliation.sql" >/dev/null
 
-echo "Fresh, legacy, and Fire Strategy drift migration chains passed."
+echo "Fresh, legacy, lifecycle replay, and Fire Strategy drift migration chains passed."
