@@ -62,6 +62,7 @@ def test_space_zone_spatial_zone_grid_and_properties(tmp_path):
     assert geometry["coordinates"][0] == geometry["coordinates"][-1]
     assert geometry["centroid"] == {"x": geometry["centroid"]["x"], "y": geometry["centroid"]["y"], "z": 0.0}
     assert geometry["coordinate_system"] == "storey-local"
+    assert geometry["geometry_method"] == "DIRECT_REPRESENTATION" and geometry["confidence"] == "HIGH"
     assert "IfcExtrudedAreaSolid" in geometry["representation_types"]
     zones = {row["ifc_global_id"]: row for row in result.tables["project_zones"]}
     assert zones[ids["zone"]]["zone_type"] == "USER_DEFINED"
@@ -126,9 +127,34 @@ def test_space_without_representation_is_explicitly_unavailable(tmp_path):
     model.write(str(path))
     result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
     geometry = result.tables["project_spaces"][0]["source_geometry"]
-    assert geometry == {"type": "Unavailable", "reason": "NO_REPRESENTATION", "representation_types": []}
+    assert geometry["type"] == "Unavailable" and geometry["reason"] == "NO_REPRESENTATION"
+    assert geometry["boundary_count"] == 0 and geometry["direct_representation"] is False
     assert result.statistics["spaces_without_plan_geometry"] == 1
     assert result.statistics["space_geometry_failure_reasons"] == {"NO_REPRESENTATION": 1}
+
+
+def test_space_boundary_geometry_recovers_closed_polygon_deterministically(tmp_path):
+    path = tmp_path / "boundary.ifc"
+    make_fixture(path)
+    model = ifcopenshell.open(str(path)); space = model.by_type("IfcSpace")[0]
+    space.Representation = None
+    boundary_element = model.create_entity("IfcVirtualElement", GlobalId=ifcopenshell.guid.new(), Name="Virtual room boundary")
+    corners = ((0., 0.), (5., 0.), (5., 4.), (0., 4.))
+    for index, (a, b) in enumerate(zip(corners, corners[1:] + corners[:1])):
+        curve = model.createIfcPolyline((model.createIfcCartesianPoint(a), model.createIfcCartesianPoint(b)))
+        connection = model.createIfcConnectionCurveGeometry(curve, None)
+        model.create_entity("IfcRelSpaceBoundary", GlobalId=ifcopenshell.guid.new(), Name=f"Boundary {index}",
+                            RelatingSpace=space, RelatedBuildingElement=boundary_element, ConnectionGeometry=connection,
+                            PhysicalOrVirtualBoundary="VIRTUAL", InternalOrExternalBoundary="INTERNAL")
+    model.write(str(path))
+    processor = Regulation38IfcProcessor()
+    first = processor.process(path, project_id="project", ifc_file_id="file")
+    second = processor.process(path, project_id="project", ifc_file_id="file")
+    geometry = first.tables["project_spaces"][0]["source_geometry"]
+    assert geometry["type"] == "Polygon" and geometry["coordinates"][0] == geometry["coordinates"][-1]
+    assert geometry["geometry_method"] == "SPACE_BOUNDARY" and geometry["confidence"] == "HIGH"
+    assert geometry == second.tables["project_spaces"][0]["source_geometry"]
+    assert first.statistics["spaces_boundary_derived"] == 1
 
 
 def test_rating_parser_accepts_safe_forms_and_rejects_missing_or_ambiguous():
