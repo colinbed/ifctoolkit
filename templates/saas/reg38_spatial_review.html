@@ -6,8 +6,8 @@
 </div>
 {% if not spatial.can_admin %}<p class="notice">You can review this spatial information. Only a project owner or administrator can make changes.</p>{% endif %}
 <div class="spatial-review" id="spatial-review">
-  <aside class="structure-panel"><h3>Model structure</h3><nav id="structure-tree" aria-label="Model structure"></nav></aside>
-  <section class="plan-panel"><div class="plan-heading"><strong id="plan-title">Select a storey</strong><small>Generated from extracted IFC geometry</small></div><svg id="storey-plan" viewBox="0 0 800 560" role="img" aria-label="Selected storey plan"><text x="400" y="280" text-anchor="middle">Select a storey or space to view its plan</text></svg></section>
+  <aside class="structure-panel"><div class="pane-heading"><strong>MODEL STRUCTURE</strong></div><nav id="structure-tree" aria-label="Model structure"></nav></aside>
+  <section class="plan-panel"><div class="plan-heading"><div><strong id="plan-title">Select a storey</strong><small>Persisted Model Scan geometry</small></div><div class="plan-controls" aria-label="Plan controls"><button type="button" data-plan-action="room">Fit room</button><button type="button" data-plan-action="storey">Fit storey</button><button type="button" data-plan-action="in">+</button><button type="button" data-plan-action="out">−</button><button type="button" data-plan-action="reset">Reset</button></div></div><div class="plan-viewport"><svg id="storey-plan" viewBox="0 0 800 560" role="img" aria-label="Selected storey plan"><text x="400" y="280" text-anchor="middle">Select a storey or space to view its plan</text></svg></div></section>
   <aside class="details-panel" id="spatial-details"><div class="empty-detail"><strong>Select a space or zone</strong><p>Review IFC provenance and edit working values here.</p></div></aside>
 </div>
 <script id="spatial-data" type="application/json">{{ spatial|tojson }}</script>
