@@ -40,8 +40,15 @@ class SupabaseBatchSink:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         response = requests.request(method, f"{self.url}/{path.lstrip('/')}", headers=self.headers, timeout=120, **kwargs)
-        response.raise_for_status()
+        self._raise_for_status(response, method=method, path=path)
         return response.json() if response.content else None
+
+    @staticmethod
+    def _raise_for_status(response: Any, *, method: str, path: str) -> None:
+        if not getattr(response, "ok", getattr(response, "status_code", 200) < 400):
+            _log("postgrest_request_failed", method=method, path=path,
+                 response_status=response.status_code, response_body=response.text)
+        response.raise_for_status()
 
     def claim(self) -> dict[str, Any] | None:
         value = self._request("POST", "rest/v1/rpc/claim_reg38_ifc_job", json={"p_worker_id": self.worker_id})
@@ -57,7 +64,7 @@ class SupabaseBatchSink:
                 f"&claim_token=eq.{job['claim_token']}")
         headers = {**self.headers, "Prefer": "return=representation"}
         response = requests.patch(f"{self.url}/{path}", headers=headers, json=values, timeout=120)
-        response.raise_for_status()
+        self._raise_for_status(response, method="PATCH", path=path)
         if not response.json():
             raise LostLeaseError(f"job {job['id']} lease is no longer owned")
 
@@ -69,7 +76,7 @@ class SupabaseBatchSink:
         # already the canonical path persisted by finalize_ifc_upload.
         url = f"{self.url}/storage/v1/object/authenticated/project-files/{storage_path.lstrip('/')}"
         with requests.get(url, headers=self.headers, timeout=(30, 1800), stream=True) as response:
-            response.raise_for_status()
+            self._raise_for_status(response, method="GET", path="storage/v1/object/authenticated/project-files")
             with destination.open("wb") as output:
                 for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
                     if chunk:
@@ -79,14 +86,32 @@ class SupabaseBatchSink:
         order = ("buildings", "building_storeys", "ifc_objects", "ifc_object_properties",
                  "ifc_object_relationships", "project_spaces", "project_zones", "project_zone_members",
                  "project_grids", "project_grid_axes", "fire_requirements", "model_scan_warnings")
+        # Every table has an intentional retry identity. Most extractor rows use
+        # deterministic primary keys; the exceptions use their declared logical
+        # unique constraints.
+        conflict_targets = {
+            "buildings": "id", "building_storeys": "id",
+            "ifc_objects": "ifc_file_id,ifc_global_id", "ifc_object_properties": "id",
+            "ifc_object_relationships": "id", "project_spaces": "id", "project_zones": "id",
+            "project_zone_members": "zone_id,space_id", "project_grids": "id",
+            "project_grid_axes": "id",
+            "fire_requirements": ("project_id,ifc_object_id,requirement_type,source_scope,"
+                                  "source_property_set,source_property_name,source_property_value,source_type"),
+            "model_scan_warnings": "ifc_file_id,ifc_object_id,warning_code",
+        }
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}
         for table in order:
             rows = tables.get(table, [])
             _log("phase", phase=f"WRITE_{table.upper()}", rows=len(rows))
             for offset in range(0, len(rows), self.batch_size):
-                response = requests.post(f"{self.url}/rest/v1/{table}", headers=headers,
-                                         json=rows[offset:offset + self.batch_size], timeout=120)
-                response.raise_for_status()
+                batch = rows[offset:offset + self.batch_size]
+                ids = [row.get("id") for row in batch if row.get("id") is not None]
+                batch_number = offset // self.batch_size + 1
+                _log("batch_write", table=table, batch_number=batch_number, rows=len(batch),
+                     unique_ids=len(set(ids)), duplicate_id_count=len(ids) - len(set(ids)))
+                path = f"rest/v1/{table}?on_conflict={conflict_targets[table]}"
+                response = requests.post(f"{self.url}/{path}", headers=headers, json=batch, timeout=120)
+                self._raise_for_status(response, method="POST", path=path)
 
 
 def process_job(sink: SupabaseBatchSink, job: dict[str, Any]) -> None:

@@ -3,7 +3,7 @@ from pathlib import Path
 import ifcopenshell
 import ifcopenshell.api
 
-from backend.reg38_ifc_processor import Regulation38IfcProcessor, parse_fire_rating
+from backend.reg38_ifc_processor import Regulation38IfcProcessor, ScanResult, parse_fire_rating
 
 
 def make_fixture(path: Path):
@@ -69,6 +69,35 @@ def test_standard_and_custom_fire_discovery_and_statistics(tmp_path):
     assert result.statistics["fire_safety_spatial_zones"] == 1
     assert result.statistics["grid_axes"] == 1
     assert result.statistics["doors_with_detected_fire_rating"] == 1
+
+
+def test_multiple_fire_properties_on_one_object_have_unique_stable_identities(tmp_path):
+    path = tmp_path / "multiple-fire-properties.ifc"
+    make_fixture(path)
+    model = ifcopenshell.open(str(path))
+    door = model.by_type("IfcDoor")[0]
+    extra = ifcopenshell.api.run("pset.add_pset", model, product=door, name="AssetFireData")
+    ifcopenshell.api.run("pset.edit_pset", model, pset=extra,
+                        properties={"Fire Rating": "FD60S", "Smoke Rating": "EI30"})
+    model.write(str(path))
+
+    processor = Regulation38IfcProcessor()
+    first = processor.process(path, project_id="project", ifc_file_id="file").tables["fire_requirements"]
+    second = processor.process(path, project_id="project", ifc_file_id="file").tables["fire_requirements"]
+
+    assert len(first) >= 4
+    assert len({row["id"] for row in first}) == len(first)
+    assert len({row["source_finding_key"] for row in first}) == len(first)
+    assert [row["id"] for row in first] == [row["id"] for row in second]
+
+
+def test_identical_logical_fire_findings_are_deduplicated():
+    result = ScanResult()
+    result.tables["ifc_objects"] = [{"id": "object", "ifc_entity": "IfcDoor"}]
+    prop = {"source_scope": "OCCURRENCE", "property_set": "Custom",
+            "property_name": "Fire Rating", "property_value_text": "EI60"}
+    Regulation38IfcProcessor()._fire(result, "project", "file", {"object": [prop, dict(prop)]})
+    assert len(result.tables["fire_requirements"]) == 1
 
 
 def test_rating_parser_accepts_safe_forms_and_rejects_missing_or_ambiguous():
