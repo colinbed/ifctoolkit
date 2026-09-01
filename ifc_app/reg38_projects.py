@@ -30,6 +30,13 @@ MAX_IFC_BYTES = 500 * 1024 * 1024
 LOGGER = logging.getLogger("ifc_app.reg38.upload")
 ZONE_TYPES = ("FIRE_COMPARTMENT", "SMOKE_ZONE", "ALARM_ZONE", "SPRINKLER_ZONE", "EVACUATION_ZONE",
               "OCCUPANCY_ZONE", "REFUGE", "HIGH_RISK", "USER_DEFINED")
+FIRE_STRATEGY_CATEGORIES = ("COMPARTMENTATION", "FIRE_RESISTING_CONSTRUCTION", "FIRE_DOORS_SHUTTERS",
+    "ESCAPE_ROUTES", "DETECTION_ALARM", "EMERGENCY_LIGHTING", "SMOKE_CONTROL", "FIRE_SUPPRESSION",
+    "FIREFIGHTING_FACILITIES", "SIGNAGE", "FIRE_SERVICE_ACCESS", "OTHER")
+FIRE_RELEVANT_ENTITIES = {"IfcDoor", "IfcWall", "IfcWallStandardCase", "IfcSlab", "IfcWindow", "IfcCurtainWall",
+    "IfcStair", "IfcRamp", "IfcRailing", "IfcCovering", "IfcDamper", "IfcFan", "IfcAlarm", "IfcSensor",
+    "IfcLightFixture", "IfcFireSuppressionTerminal", "IfcDistributionElement", "IfcSpace", "IfcZone",
+    "IfcSpatialZone", "IfcSystem", "IfcGroup"}
 
 
 def check_reg38_storage_bucket(auth: SupabaseAuthService | None = None) -> bool:
@@ -522,15 +529,104 @@ class Regulation38Repository:
         if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
             raise SupabaseAuthError("You cannot access this project.", status_code=403)
         rows = self._data_request("GET", f"project_spaces?project_id=eq.{quote(project_id)}&storey_id=eq.{quote(storey_id)}"
-                                  "&select=id,storey_id,space_number,name,source_geometry&order=name", token)
+                                  "&select=id,storey_id,space_number,name,description,source_geometry&order=space_number", token)
         spaces = rows if isinstance(rows, list) else []
         return {"project_id": project_id, "storey_id": storey_id, "spaces": spaces,
                 "geometry_status": "available" if any((s.get("source_geometry") or {}).get("coordinates") for s in spaces) else "unavailable"}
+
+    def fire_strategy(self, token: str, project_id: str, user_id: str = "") -> dict[str, Any]:
+        """Return persisted scan data and idempotently seed review suggestions."""
+        if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You cannot access this project.", status_code=403)
+        pid = quote(project_id)
+        files = self._data_request("GET", f"ifc_files?project_id=eq.{pid}&is_current=eq.true&select=id,status&limit=1", token)
+        model = files[0] if isinstance(files, list) and files else None
+        if not model:
+            return {"ready": False, "error": "Model Scan data is missing. Complete Model Scan before reviewing Fire Strategy."}
+        mid = quote(str(model["id"]))
+        jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{mid}&select=status&order=created_at.desc&limit=1", token)
+        status = str((jobs[0] if isinstance(jobs, list) and jobs else {}).get("status") or model.get("status") or "").upper()
+        if status not in {"COMPLETED", "SUCCEEDED"}:
+            return {"ready": False, "error": "Model processing must complete successfully before Fire Strategy review."}
+        objects = self._data_request("GET", f"ifc_objects?project_id=eq.{pid}&ifc_file_id=eq.{mid}&select=*,building_storeys(id,name),ifc_object_properties(property_set,property_name,property_value_text,source_scope)&order=ifc_entity,name", token)
+        objects = objects if isinstance(objects, list) else []
+        all_reviews = self._data_request("GET", f"fire_strategy_reviews?project_id=eq.{pid}&select=*", token)
+        all_reviews = all_reviews if isinstance(all_reviews, list) else []
+        existing = [row for row in all_reviews if str(row.get("model_id")) == str(model["id"])]
+        prior_by_guid = {str(row.get("ifc_global_id")): row for row in all_reviews if row not in existing}
+        existing_guids = {str(row.get("ifc_global_id")) for row in existing}
+        seeds = []
+        indicators = ("fire", "smoke", "damper", "sprinkler", "alarm", "detection", "emergency", "escape",
+                      "compartment", "suppression", "fire stopping", "firestopping", "integrity", "insulation", "frl", "ei", "rei")
+        for obj in objects:
+            reasons = []
+            if obj.get("ifc_entity") in FIRE_RELEVANT_ENTITIES:
+                reasons.append(f"IFC entity {obj['ifc_entity']} is potentially fire relevant")
+            for prop in obj.get("ifc_object_properties") or []:
+                haystack = " ".join(str(prop.get(key) or "") for key in ("property_set", "property_name", "property_value_text")).lower()
+                if any(term in haystack for term in indicators):
+                    reasons.append(f"{prop.get('property_set') or 'IFC'}.{prop.get('property_name')} is populated")
+            gid = str(obj.get("ifc_global_id") or "")
+            if reasons and gid and gid not in existing_guids:
+                prior = prior_by_guid.get(gid) or {}
+                seed = {"project_id": project_id, "model_id": model["id"], "ifc_object_id": obj["id"],
+                    "ifc_global_id": gid, "entity_type": obj.get("ifc_entity"), "automatically_suggested": True,
+                    "suggestion_reason": "Suggested because " + "; ".join(dict.fromkeys(reasons)),
+                    "original_values": {key: obj.get(key) for key in ("name", "long_name", "description", "predefined_type", "object_type", "storey_id")}}
+                # A replacement model with a stable GlobalId inherits deliberate
+                # decisions, while IFC-derived provenance is refreshed.
+                for key in ("relevance", "categories", "requirement_reference", "required_fire_performance",
+                            "evidence_required", "no_evidence_required", "review_notes", "responsible_organisation",
+                            "review_status", "manually_selected", "reviewed_by"):
+                    if key in prior: seed[key] = prior.get(key)
+                seeds.append(seed)
+        if seeds:
+            self._data_request("POST", "fire_strategy_reviews?on_conflict=project_id,model_id,ifc_global_id", token,
+                               json=seeds, headers={"Prefer": "resolution=ignore-duplicates,return=minimal"})
+            refreshed = self._data_request("GET", f"fire_strategy_reviews?project_id=eq.{pid}&select=*", token) or []
+            existing = [row for row in refreshed if str(row.get("model_id")) == str(model["id"])]
+        current_guids = {str(obj.get("ifc_global_id")) for obj in objects}
+        orphan_ids = [str(row["id"]) for row in all_reviews if str(row.get("model_id")) != str(model["id"])
+                      and str(row.get("ifc_global_id")) not in current_guids and not row.get("orphaned")]
+        if orphan_ids:
+            self._data_request("PATCH", f"fire_strategy_reviews?project_id=eq.{pid}&id=in.({','.join(map(quote, orphan_ids))})",
+                               token, json={"orphaned": True})
+        object_by_guid = {str(obj.get("ifc_global_id")): obj for obj in objects}
+        reviews = [{**row, "object": object_by_guid.get(str(row.get("ifc_global_id")))} for row in existing]
+        summary = self._fire_strategy_summary(reviews)
+        return {"ready": True, "model": model, "objects": objects, "reviews": reviews, "summary": summary,
+                "can_edit": self.project_role(token, project_id) in {"OWNER", "ADMIN", "EDITOR"},
+                "categories": FIRE_STRATEGY_CATEGORIES}
+
+    @staticmethod
+    def _fire_strategy_summary(reviews: list[Mapping[str, Any]]) -> dict[str, Any]:
+        active = [r for r in reviews if not r.get("orphaned")]
+        missing_category = sum(r.get("relevance") == "IN_SCOPE" and not (r.get("categories") or []) for r in active)
+        missing_evidence = sum(r.get("relevance") == "IN_SCOPE" and not str(r.get("evidence_required") or "").strip()
+                               and not r.get("no_evidence_required") for r in active)
+        unreviewed = sum(r.get("automatically_suggested") and r.get("relevance") == "NOT_ASSESSED" for r in active)
+        return {"total_suggestions": sum(bool(r.get("automatically_suggested")) for r in active),
+            "reviewed": len(active) - unreviewed, "in_scope": sum(r.get("relevance") == "IN_SCOPE" for r in active),
+            "out_of_scope": sum(r.get("relevance") == "OUT_OF_SCOPE" for r in active),
+            "review_required": sum(r.get("relevance") == "REVIEW_REQUIRED" for r in active),
+            "missing_category": missing_category, "missing_evidence": missing_evidence,
+            "complete": not (unreviewed or missing_category or missing_evidence)}
+
+    def update_fire_strategy(self, token: str, project_id: str, review_ids: list[str], values: Mapping[str, Any], user_id: str) -> None:
+        self.require_project_edit(token, project_id)
+        if not review_ids: raise ValueError("Select at least one review record.")
+        allowed = {"relevance", "categories", "requirement_reference", "required_fire_performance", "evidence_required",
+                   "no_evidence_required", "review_notes", "responsible_organisation", "review_status"}
+        payload = {key: values[key] for key in allowed if key in values}
+        payload["reviewed_by"] = user_id or None
+        ids = ",".join(quote(value) for value in review_ids)
+        self._data_request("PATCH", f"fire_strategy_reviews?project_id=eq.{quote(project_id)}&id=in.({ids})", token, json=payload)
 
     def update_space(self, token: str, project_id: str, space_id: str, values: Mapping[str, Any]) -> None:
         self.require_project_admin(token, project_id)
         allowed = {"space_number", "name", "description", "occupancy_type", "occupancy_capacity", "high_risk", "included_in_reg38", "working_geometry"}
         payload = {key: values[key] for key in allowed if key in values}
+        payload["working_fields_edited"] = True
         if "working_geometry" in payload:
             geometry = payload["working_geometry"]
             if not isinstance(geometry, Mapping) or geometry.get("type") != "Polygon" or len(geometry.get("coordinates") or []) < 4:
@@ -539,8 +635,6 @@ class Regulation38Repository:
             if ring[0] != ring[-1]:
                 raise ValueError("Working geometry must be closed.")
             payload["working_geometry"] = {**geometry, "geometry_method": "MANUAL", "source": "USER", "confidence": "MANUAL"}
-        if not str(payload.get("name") or "").strip():
-            raise ValueError("Space name is required.")
         capacity = payload.get("occupancy_capacity")
         if capacity not in (None, ""):
             payload["occupancy_capacity"] = int(capacity)

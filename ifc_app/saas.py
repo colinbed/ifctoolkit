@@ -570,9 +570,10 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
                     file["ifc_processing_jobs"] = [dict(progress.job)]
         model_scan = repo.model_scan(token, project_id, str(user.get("id") or "")) if step == 4 else {}
         spatial = repo.spatial_review(token, project_id) if step == 5 else {}
+        fire_strategy = repo.fire_strategy(token, project_id, str(user.get("id") or "")) if step == 6 else {}
         return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files,
                                 model_scan=model_scan, spatial=spatial, zone_types=ZONE_TYPES,
-                                progress=progress, scope=scope)
+                                fire_strategy=fire_strategy, progress=progress, scope=scope)
     except SupabaseAuthError as exc:
         status = 403 if exc.status_code in {401, 403} else 404 if exc.status_code == 404 and exc.public_message == "Project not found." else 503 if exc.status_code == 503 else 502
         return HTMLResponse(exc.public_message, status_code=status)
@@ -817,6 +818,25 @@ async def update_reg38_space(request: Request, project_id: str, space_id: str):
             "occupancy_capacity": form.get("occupancy_capacity"), "high_risk": form.get("high_risk") == "yes",
             "included_in_reg38": form.get("included_in_reg38") == "yes"})
         return RedirectResponse(f"{firetrace_wizard_url(project_id, 5)}?selected=space:{space_id}", status_code=303)
+    except (ValueError, SupabaseAuthError) as exc:
+        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
+                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+
+
+@router.post("/app/firetrace/projects/{project_id}/fire-strategy/reviews")
+async def update_fire_strategy(request: Request, project_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    values = {key: form.get(key) for key in ("relevance", "requirement_reference", "required_fire_performance",
+              "evidence_required", "review_notes", "responsible_organisation", "review_status") if form.get(key) is not None}
+    if form.getlist("categories"): values["categories"] = [str(x) for x in form.getlist("categories")]
+    if form.get("no_evidence_required") is not None: values["no_evidence_required"] = form.get("no_evidence_required") == "yes"
+    try:
+        Regulation38Repository(get_auth_service()).update_fire_strategy(token, project_id,
+            [str(x) for x in form.getlist("review_ids")], values, str(user.get("id") or ""))
+        selected = str(form.getlist("review_ids")[0]) if form.getlist("review_ids") else ""
+        return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?selected={selected}", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
                             status_code=400 if isinstance(exc, ValueError) else exc.status_code)

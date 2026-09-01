@@ -13,7 +13,9 @@ def make_fixture(path: Path):
     ifcopenshell.api.run("aggregate.assign_object", model, products=[site], relating_object=project)
     ifcopenshell.api.run("aggregate.assign_object", model, products=[building], relating_object=site)
     ifcopenshell.api.run("aggregate.assign_object", model, products=[storey], relating_object=building)
-    space = create("IfcSpace", "Room 101")
+    space = create("IfcSpace", "01-127b")
+    space.LongName = "INDUSTRY LEARNING CLASSROOM 01B"
+    space.Description = "Teaching space"
     ifcopenshell.api.run("aggregate.assign_object", model, products=[space], relating_object=storey)
     ifcopenshell.api.run("unit.assign_unit", model)
     model_context = ifcopenshell.api.run("context.add_context", model, context_type="Model")
@@ -55,6 +57,9 @@ def test_space_zone_spatial_zone_grid_and_properties(tmp_path):
     result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
     space = result.tables["project_spaces"][0]
     assert space["ifc_global_id"] == ids["space"]
+    assert space["space_number"] == "01-127b"
+    assert space["name"] == "INDUSTRY LEARNING CLASSROOM 01B"
+    assert space["description"] == "Teaching space"
     assert (space["gross_area"], space["net_area"], space["height"]) == (42.5, 40.0, 3.0)
     geometry = space["source_geometry"]
     assert geometry["type"] == "Polygon"

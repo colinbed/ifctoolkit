@@ -34,7 +34,7 @@ def test_renaming_working_space_never_writes_ifc_source():
     Regulation38Repository(auth).update_space("token", PROJECT, SPACE_1, {"name": "Plant room", "occupancy_capacity": "2"})
     writes = [call for call in auth.calls if call[0] in {"PATCH", "POST", "DELETE"}]
     assert len(writes) == 1 and "/project_spaces?" in writes[0][1]
-    assert writes[0][2]["json"] == {"name": "Plant room", "occupancy_capacity": 2}
+    assert writes[0][2]["json"] == {"name": "Plant room", "occupancy_capacity": 2, "working_fields_edited": True}
     assert all("ifc_objects" not in call[1] and "ifc_object_properties" not in call[1] for call in writes)
 
 
