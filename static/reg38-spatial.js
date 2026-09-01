@@ -18,7 +18,6 @@
     if (!source(space).name && !source(space).long_name && !space.space_number) warnings.push("Unnamed space");
     const dupName = Object.values(spaces).filter((x) => x.id !== space.id && ((space.name && x.name === space.name) || (space.space_number && x.space_number === space.space_number)));
     if (dupName.length) warnings.push("Duplicate name or number");
-    if (space.source_geometry?.type !== "Polygon" || !space.source_geometry.coordinates?.length) warnings.push("Missing geometry");
     if (fireZones.length && !spaceZoneIds(space.id).some((id) => zones[id]?.zone_type === "FIRE_COMPARTMENT")) warnings.push("Not assigned to a fire compartment");
     return warnings;
   };
@@ -37,7 +36,7 @@
     selectedStorey = space.storey_id; selectedSpace = space.id; loadPlan(); renderTree(document.getElementById("spatial-search").value);
     details.innerHTML = `<form method="post" action="/app/projects/${config.projectId}/regulation-38/spaces/${id}">
       <div class="detail-title"><div><span class="source-badge">Source: IFC</span><h3>${esc(space.name)}</h3></div>${ws.length ? `<span class="warning-dot" title="${esc(ws.join('; '))}">${ws.length}</span>` : ""}</div>
-      <h4>Source information <small>Read-only</small></h4>${sourceRow("IFC GlobalId", space.ifc_global_id)}${sourceRow("IFC entity", original.ifc_entity || "IfcSpace")}${sourceRow("Original Name", original.name)}${sourceRow("Original LongName", original.long_name)}${sourceRow("Original description", original.description)}${sourceRow("Source storey", storey(space).name)}${sourceRow("Net / gross area", `${space.net_area ?? "—"} / ${space.gross_area ?? "—"}`)}
+      <h4>Source information <small>Read-only</small></h4>${sourceRow("IFC GlobalId", space.ifc_global_id)}${sourceRow("IFC entity", original.ifc_entity || "IfcSpace")}${sourceRow("Original Name", original.name)}${sourceRow("Original LongName", original.long_name)}${sourceRow("Original description", original.description)}${sourceRow("Source storey", storey(space).name)}${sourceRow("Net / gross area", `${space.net_area ?? "—"} / ${space.gross_area ?? "—"}`)}${sourceRow("Geometry", space.source_geometry?.type === "Polygon" ? `${space.source_geometry.geometry_method || "IFC"} · ${space.source_geometry.confidence || "—"} confidence` : "Unavailable")}
       <h4>Working fields</h4>${field("Space number", "space_number", space.space_number)}${field("Name", "name", space.name)}${changed(space.name, original.name)}<label>Description<textarea name="description" ${config.canAdmin ? "" : "disabled"}>${esc(space.description)}</textarea></label>${changed(space.description, original.description)}${field("Occupancy type", "occupancy_type", space.occupancy_type)}${field("Occupancy capacity", "occupancy_capacity", space.occupancy_capacity, "number")}
       <label>High-risk?<select name="high_risk" ${config.canAdmin ? "" : "disabled"}><option value="no" ${!space.high_risk ? "selected" : ""}>No</option><option value="yes" ${space.high_risk ? "selected" : ""}>Yes</option></select></label><label>Include in Regulation 38?<select name="included_in_reg38" ${config.canAdmin ? "" : "disabled"}><option value="yes" ${space.included_in_reg38 ? "selected" : ""}>Yes</option><option value="no" ${!space.included_in_reg38 ? "selected" : ""}>No</option></select></label>
       ${ws.map((w) => `<p class="review-warning">${esc(w)}</p>`).join("")}${config.canAdmin ? '<button class="button small">Save working values</button>' : ""}</form>`;
@@ -63,7 +62,8 @@
   const emptyMessage = () => {
     const unavailable = selectedSpace && spaces[selectedSpace]?.source_geometry;
     const reason = unavailable?.reason;
-    if (reason === "NO_REPRESENTATION") return "This space has no geometric representation in the source IFC.";
+    if (reason === "NO_REPRESENTATION") return "Space geometry is not explicitly represented in the IFC. FireTrace detected this IfcSpace, but the source model provides no direct representation or usable spatial boundary.";
+    if (reason === "NO_BOUNDARY_DATA") return "The IFC identifies this space and its boundaries, but does not provide usable ConnectionGeometry. Review manually, create working geometry, or replace the Design Model.";
     if (reason) return "Space detected, but FireTrace could not derive a closed plan footprint from its IFC geometry.";
     return "Plan geometry has not been generated. Re-run Model Scan to backfill this space.";
   };

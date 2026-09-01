@@ -170,6 +170,143 @@ def _polygon_centroid(ring: list[list[float]]) -> tuple[float, float] | None:
     return cx / (3 * area2), cy / (3 * area2)
 
 
+def _curve_points(curve: Any) -> list[list[float]]:
+    """Read the common curve forms used by IFC2X3 Revit space boundaries."""
+    if not curve:
+        return []
+    if curve.is_a("IfcPolyline"):
+        return [[float(v) for v in point.Coordinates] for point in curve.Points]
+    if curve.is_a("IfcCompositeCurve"):
+        points: list[list[float]] = []
+        for segment in curve.Segments:
+            part = _curve_points(segment.ParentCurve)
+            if getattr(segment, "SameSense", True) is False:
+                part.reverse()
+            points.extend(part if not points else part[1:])
+        return points
+    if curve.is_a("IfcTrimmedCurve"):
+        return _curve_points(curve.BasisCurve)
+    return []
+
+
+def _boundary_points(connection: Any) -> list[list[float]]:
+    geometry = getattr(connection, "SurfaceOnRelatingElement", None) or getattr(connection, "CurveOnRelatingElement", None)
+    if not geometry:
+        return []
+    curve = getattr(geometry, "OuterBoundary", None) or geometry
+    points = _curve_points(curve)
+    position = getattr(geometry, "BasisSurface", None)
+    position = getattr(position, "Position", None) or getattr(geometry, "Position", None)
+    if position and points:
+        matrix = ifcopenshell.util.placement.get_axis2placement(position)
+        points = [(matrix @ [*(point + [0.0] * (3 - len(point)))[:3], 1.0])[:3].tolist() for point in points]
+    return points
+
+
+def _polygonise_segments(segments: list[tuple[list[float], list[float]]], tolerance: float = 1e-4) -> list[list[float]] | None:
+    """Join unordered XY segments deterministically and return the largest closed loop."""
+    def key(point):
+        return (round(point[0] / tolerance), round(point[1] / tolerance))
+    edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    coords: dict[tuple[int, int], list[float]] = {}
+    for start, end in segments:
+        a, b = key(start), key(end)
+        if a == b:
+            continue
+        coords.setdefault(a, [round(start[0], 6), round(start[1], 6)])
+        coords.setdefault(b, [round(end[0], 6), round(end[1], 6)])
+        edges.add(tuple(sorted((a, b))))
+    loops = []
+    while edges:
+        first = min(edges); edges.remove(first); loop = [first[0], first[1]]
+        while loop[-1] != loop[0]:
+            candidates = sorted(edge for edge in edges if loop[-1] in edge)
+            if not candidates:
+                break
+            edge = candidates[0]; edges.remove(edge)
+            loop.append(edge[1] if edge[0] == loop[-1] else edge[0])
+        if len(loop) >= 4 and loop[-1] == loop[0]:
+            ring = [coords[item] for item in loop]
+            if abs(_signed_area(ring)) > tolerance * tolerance:
+                loops.append(ring)
+    return max(loops, key=lambda ring: abs(_signed_area(ring)), default=None)
+
+
+def _space_boundaries(obj: Any) -> list[Any]:
+    return sorted((rel for rel in (getattr(obj, "BoundedBy", ()) or ())
+                   if rel.is_a("IfcRelSpaceBoundary")), key=lambda rel: rel.id())
+
+
+def _boundary_geometry(obj: Any, storey: Any) -> dict[str, Any] | None:
+    boundaries = _space_boundaries(obj)
+    segments = []
+    space_matrix = ifcopenshell.util.placement.get_local_placement(obj.ObjectPlacement) if getattr(obj, "ObjectPlacement", None) else None
+    connection_types, element_types = set(), set()
+    for relation in boundaries:
+        connection = getattr(relation, "ConnectionGeometry", None)
+        if connection:
+            connection_types.add(connection.is_a())
+        element = getattr(relation, "RelatedBuildingElement", None)
+        if element:
+            element_types.add(element.is_a())
+        points = _boundary_points(connection)
+        if space_matrix is not None:
+            points = [(space_matrix @ [*(point + [0.0] * (3 - len(point)))[:3], 1.0])[:3].tolist() for point in points]
+        for a, b in zip(points, points[1:]):
+            segments.append((a, b))
+    ring = _polygonise_segments(segments)
+    if not ring:
+        return None
+    offset = _centroid(storey) or {"x": 0.0, "y": 0.0, "z": 0.0}
+    ring = [[round(p[0] - offset["x"], 6), round(p[1] - offset["y"], 6)] for p in ring]
+    centroid = _polygon_centroid(ring)
+    if not centroid:
+        return None
+    return {"type": "Polygon", "coordinates": ring,
+            "centroid": {"x": centroid[0], "y": centroid[1], "z": 0.0},
+            "coordinate_system": "storey-local", "world_offset": offset,
+            "geometry_method": "SPACE_BOUNDARY", "source": "IFC", "confidence": "HIGH",
+            "boundary_count": len(boundaries), "connection_geometry_types": sorted(connection_types),
+            "related_building_element_types": sorted(element_types)}
+
+
+def _bounding_element_geometry(obj: Any, storey: Any) -> dict[str, Any] | None:
+    """Use boundary-linked element centre-lines only when they form closed topology."""
+    elements = {rel.RelatedBuildingElement for rel in _space_boundaries(obj)
+                if getattr(rel, "RelatedBuildingElement", None)}
+    segments = []
+    settings = ifcopenshell.geom.settings(); settings.set(settings.USE_WORLD_COORDS, True)
+    if hasattr(settings, "CONVERT_BACK_UNITS"):
+        settings.set(settings.CONVERT_BACK_UNITS, True)
+    for element in sorted(elements, key=lambda item: item.id()):
+        try:
+            shape = ifcopenshell.geom.create_shape(settings, element); verts = shape.geometry.verts
+            points = sorted({(round(float(verts[i]), 6), round(float(verts[i + 1]), 6))
+                             for i in range(0, len(verts), 3)})
+        except Exception:
+            continue
+        if len(points) < 2:
+            continue
+        # A wall's furthest XY pair is a stable approximation of its centre-line.
+        a, b = max(((a, b) for index, a in enumerate(points) for b in points[index + 1:]),
+                   key=lambda pair: (pair[0][0] - pair[1][0]) ** 2 + (pair[0][1] - pair[1][1]) ** 2)
+        segments.append((list(a), list(b)))
+    ring = _polygonise_segments(segments, tolerance=0.05)
+    if not ring:
+        return None
+    offset = _centroid(storey) or {"x": 0.0, "y": 0.0, "z": 0.0}
+    ring = [[round(p[0] - offset["x"], 6), round(p[1] - offset["y"], 6)] for p in ring]
+    centroid = _polygon_centroid(ring)
+    if not centroid:
+        return None
+    return {"type": "Polygon", "coordinates": ring,
+            "centroid": {"x": centroid[0], "y": centroid[1], "z": 0.0},
+            "coordinate_system": "storey-local", "world_offset": offset,
+            "geometry_method": "BOUNDING_ELEMENTS", "source": "IFC", "confidence": "MEDIUM",
+            "boundary_count": len(_space_boundaries(obj)),
+            "related_building_element_types": sorted({element.is_a() for element in elements})}
+
+
 def _space_geometry(obj: Any, storey: Any) -> dict[str, Any]:
     """Tessellate a space and derive its lowest horizontal closed mesh boundary.
 
@@ -179,7 +316,17 @@ def _space_geometry(obj: Any, storey: Any) -> dict[str, Any]:
     """
     representations = _representation_types(obj)
     if not getattr(obj, "Representation", None):
-        return {"type": "Unavailable", "reason": "NO_REPRESENTATION", "representation_types": []}
+        recovered = _boundary_geometry(obj, storey)
+        if recovered:
+            return recovered
+        recovered = _bounding_element_geometry(obj, storey)
+        if recovered:
+            return recovered
+        boundaries = _space_boundaries(obj)
+        return {"type": "Unavailable", "reason": "NO_BOUNDARY_DATA" if boundaries else "NO_REPRESENTATION",
+                "direct_representation": False, "representation_types": [], "boundary_count": len(boundaries),
+                "connection_geometry_types": sorted({rel.ConnectionGeometry.is_a() for rel in boundaries if rel.ConnectionGeometry}),
+                "related_building_element_types": sorted({rel.RelatedBuildingElement.is_a() for rel in boundaries if rel.RelatedBuildingElement})}
     try:
         settings = ifcopenshell.geom.settings()
         settings.set(settings.USE_WORLD_COORDS, True)
@@ -235,6 +382,7 @@ def _space_geometry(obj: Any, storey: Any) -> dict[str, Any]:
     return {"type": "Polygon", "coordinates": ring,
             "centroid": {"x": centroid[0], "y": centroid[1], "z": z_min - offset["z"]},
             "coordinate_system": "storey-local", "world_offset": offset,
+            "geometry_method": "DIRECT_REPRESENTATION", "source": "IFC", "confidence": "HIGH",
             "extraction_method": "IFCOPENSHELL_LOWEST_HORIZONTAL_MESH_BOUNDARY",
             "representation_types": representations}
 
@@ -516,4 +664,8 @@ class Regulation38IfcProcessor:
             "objects_total": len(objects), "properties_total": len(result.tables["ifc_object_properties"]),
             "spaces_with_plan_geometry": sum(g.get("type") == "Polygon" and bool(g.get("coordinates")) for g in space_geometries),
             "spaces_without_plan_geometry": sum(g.get("type") != "Polygon" for g in space_geometries),
+            "spaces_direct_geometry": sum(g.get("geometry_method") == "DIRECT_REPRESENTATION" for g in space_geometries),
+            "spaces_boundary_derived": sum(g.get("geometry_method") == "SPACE_BOUNDARY" for g in space_geometries),
+            "spaces_element_derived": sum(g.get("geometry_method") == "BOUNDING_ELEMENTS" for g in space_geometries),
+            "spaces_missing_direct_representation": sum(not g.get("direct_representation", g.get("geometry_method") == "DIRECT_REPRESENTATION") for g in space_geometries),
             "spaces_centroid_only": 0, "space_geometry_failure_reasons": geometry_failures})

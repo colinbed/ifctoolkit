@@ -175,6 +175,14 @@ def run_reduction(session_root: Path, source_name: str, payload: Dict[str, Any])
         working_ifc, input_meta = _materialize_ifc_input(source_path, tmp)
         baseline_model = ifcopenshell.open(str(working_ifc))
         product_count_before = len(baseline_model.by_type("IfcProduct"))
+        spatial_baseline = {
+            "spaces": len(baseline_model.by_type("IfcSpace")),
+            "space_representations": sum(bool(space.Representation) for space in baseline_model.by_type("IfcSpace")),
+            "space_boundaries": len(baseline_model.by_type("IfcRelSpaceBoundary")),
+            "storeys": len(baseline_model.by_type("IfcBuildingStorey")),
+            "walls": len(baseline_model.by_type("IfcWall")),
+            "doors": len(baseline_model.by_type("IfcDoor")),
+        }
         schema = baseline_model.schema
 
         current_path = tmp / "working.ifc"
@@ -241,6 +249,18 @@ def run_reduction(session_root: Path, source_name: str, payload: Dict[str, Any])
                     reopened = ifcopenshell.open(str(reduced_ifc_for_validation))
                     reopened_successfully = True
                     product_count_after = len(reopened.by_type("IfcProduct"))
+                    spatial_after = {
+                        "spaces": len(reopened.by_type("IfcSpace")),
+                        "space_representations": sum(bool(space.Representation) for space in reopened.by_type("IfcSpace")),
+                        "space_boundaries": len(reopened.by_type("IfcRelSpaceBoundary")),
+                        "storeys": len(reopened.by_type("IfcBuildingStorey")),
+                        "walls": len(reopened.by_type("IfcWall")),
+                        "doors": len(reopened.by_type("IfcDoor")),
+                    }
+                    lost = {key: (spatial_baseline[key], value) for key, value in spatial_after.items()
+                            if value < spatial_baseline[key]}
+                    if lost:
+                        raise IfcFileSizeReducerError(f"Reduction removed FireTrace-critical spatial data: {lost}")
                 except Exception as exc:
                     warnings.append(f"Post-write validation failed: {exc}")
             else:
@@ -265,6 +285,8 @@ def run_reduction(session_root: Path, source_name: str, payload: Dict[str, Any])
                     "reopened_successfully": reopened_successfully,
                     "product_count_before": product_count_before,
                     "product_count_after": product_count_after,
+                    "spatial_before": spatial_baseline,
+                    "spatial_after": spatial_after if reopened_successfully else None,
                     "warnings": warnings,
                 },
                 "log": log,

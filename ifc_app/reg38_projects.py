@@ -499,11 +499,22 @@ class Regulation38Repository:
         spaces = spaces if isinstance(spaces, list) else []
         def geometry_needs_backfill(space: Mapping[str, Any]) -> bool:
             geometry = space.get("source_geometry")
-            return (not isinstance(geometry, Mapping) or geometry.get("type") != "Polygon"
-                    or not geometry.get("coordinates") or bool(geometry.get("reason")))
+            return (not isinstance(geometry, Mapping) or geometry.get("reason") in
+                    {"BACKFILL_REQUIRED", "NOT_PROCESSED", "GEOMETRY_ENGINE_FAILURE", "TRANSIENT_ERROR"})
+        geometries = [space.get("source_geometry") if isinstance(space.get("source_geometry"), Mapping) else {}
+                      for space in spaces]
+        summary = {
+            "spaces": len(spaces),
+            "missing_direct": sum(g.get("geometry_method") != "DIRECT_REPRESENTATION" for g in geometries),
+            "direct": sum(g.get("geometry_method") == "DIRECT_REPRESENTATION" for g in geometries),
+            "boundary": sum(g.get("geometry_method") == "SPACE_BOUNDARY" for g in geometries),
+            "elements": sum(g.get("geometry_method") == "BOUNDING_ELEMENTS" for g in geometries),
+            "unresolved": sum(g.get("type") != "Polygon" for g in geometries),
+        }
         return {"spaces": spaces, "zones": zones if isinstance(zones, list) else [],
                 "grids": grids if isinstance(grids, list) else [], "members": members if isinstance(members, list) else [],
                 "can_admin": self.project_role(token, project_id) in {"OWNER", "ADMIN"},
+                "geometry_summary": summary,
                 "geometry_backfill_required": any(geometry_needs_backfill(space) for space in spaces)}
 
     def spatial_storey_plan(self, token: str, project_id: str, storey_id: str) -> dict[str, Any]:
@@ -518,8 +529,16 @@ class Regulation38Repository:
 
     def update_space(self, token: str, project_id: str, space_id: str, values: Mapping[str, Any]) -> None:
         self.require_project_admin(token, project_id)
-        allowed = {"space_number", "name", "description", "occupancy_type", "occupancy_capacity", "high_risk", "included_in_reg38"}
+        allowed = {"space_number", "name", "description", "occupancy_type", "occupancy_capacity", "high_risk", "included_in_reg38", "working_geometry"}
         payload = {key: values[key] for key in allowed if key in values}
+        if "working_geometry" in payload:
+            geometry = payload["working_geometry"]
+            if not isinstance(geometry, Mapping) or geometry.get("type") != "Polygon" or len(geometry.get("coordinates") or []) < 4:
+                raise ValueError("Working geometry must be a closed polygon.")
+            ring = geometry["coordinates"]
+            if ring[0] != ring[-1]:
+                raise ValueError("Working geometry must be closed.")
+            payload["working_geometry"] = {**geometry, "geometry_method": "MANUAL", "source": "USER", "confidence": "MANUAL"}
         if not str(payload.get("name") or "").strip():
             raise ValueError("Space name is required.")
         capacity = payload.get("occupancy_capacity")
