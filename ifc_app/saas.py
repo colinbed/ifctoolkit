@@ -22,6 +22,12 @@ from ifc_app.supabase_auth import (
     user_display_name,
 )
 from ifc_app.entitlements import TOOL_REGISTRY, account_level, can_access_tool, has_account_level, trial_is_active, trial_summary
+from ifc_app.firetrace_wizard import (
+    FIRETRACE_WIZARD_STEPS,
+    LEGACY_REGULATION_38_STEP_ALIASES,
+    firetrace_wizard_step,
+    firetrace_wizard_url,
+)
 from ifc_app.reg38_projects import REG38_DEFAULT_SECTIONS, ZONE_TYPES, ProjectCreate, Regulation38Repository
 
 
@@ -495,14 +501,13 @@ def regulation_38(request: Request):
     return RedirectResponse(FIRETRACE_ROUTES["home"], status_code=308)
 
 
-WIZARD_STEPS = ("Project Scope", "Design Information", "IFC Model", "Model Scan", "Spatial Review",
-                "Fire Strategy", "Evidence", "Compliance Review", "Handover / Export")
-
-
 def _wizard_response(request: Request, user: dict[str, Any], project: dict[str, Any] | None, step: int, **extra: Any):
     project_id = str((project or {}).get("id", ""))
     values = {"project": project or {}, "project_id": project_id, "step": step,
-              "steps": WIZARD_STEPS, "wizard_routes": {n: wizard_url(project_id, n) for n in range(1, 10)},
+              "steps": tuple(label for _, label in FIRETRACE_WIZARD_STEPS),
+              "wizard_steps": FIRETRACE_WIZARD_STEPS,
+              "wizard_routes": {n: firetrace_wizard_url(project_id, n)
+                                for n in range(1, len(FIRETRACE_WIZARD_STEPS) + 1)},
               "sections": [], "files": [], "error": None}
     values.update(extra)
     return templates.TemplateResponse(request=request, name="firetrace/setup/wizard.html",
@@ -578,7 +583,8 @@ def firetrace_project_dashboard(request: Request, project_id: str):
         if not project:
             return HTMLResponse("Project not found.", status_code=404)
         return templates.TemplateResponse(request=request, name="firetrace/project.html",
-            context=_dashboard_context(request, user, project=project, project_id=project_id, routes=FIRETRACE_ROUTES))
+            context=_dashboard_context(request, user, project=project, project_id=project_id,
+                                       setup_url=firetrace_wizard_url(project_id, 1), routes=FIRETRACE_ROUTES))
     except SupabaseAuthError as exc:
         return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
@@ -612,13 +618,22 @@ def firetrace_project_area(request: Request, project_id: str, area: str):
         return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
 
-@router.get("/app/regulation-38/projects/{project_id}/setup/{setup_step}", response_class=HTMLResponse)
 @router.get("/app/firetrace/projects/{project_id}/setup/{setup_step}", response_class=HTMLResponse)
 def regulation_38_setup(request: Request, project_id: str, setup_step: str):
-    step_map = {slug: index for index, (slug, _) in enumerate(WIZARD_ROUTE_MAP, 1)}
-    if setup_step not in step_map:
+    step = firetrace_wizard_step(setup_step)
+    if step is None:
         return HTMLResponse("Setup step not found.", status_code=404)
-    return regulation_38_project(request, project_id, step_map[setup_step])
+    return regulation_38_project(request, project_id, step)
+
+
+@router.get("/app/regulation-38/projects/{project_id}/setup/{setup_step}")
+def legacy_regulation_38_setup(project_id: str, setup_step: str):
+    """Keep bookmarked Regulation 38 steps working via FireTrace redirects."""
+    canonical_slug = LEGACY_REGULATION_38_STEP_ALIASES.get(setup_step)
+    if canonical_slug is None:
+        return HTMLResponse("Setup step not found.", status_code=404)
+    step = firetrace_wizard_step(canonical_slug)
+    return RedirectResponse(firetrace_wizard_url(project_id, step or 1), status_code=308)
 
 
 @router.post("/app/projects/{project_id}/regulation-38/details")
@@ -631,7 +646,7 @@ async def update_reg38_details(request: Request, project_id: str):
     try:
         ProjectCreate(**values).payload()
         Regulation38Repository(get_auth_service()).update_project(token, project_id, values)
-        return RedirectResponse(wizard_url(project_id, 2), status_code=303)
+        return RedirectResponse(firetrace_wizard_url(project_id, 2), status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         return _wizard_response(request, user, {"id": project_id, **values}, 1, error=str(exc) if isinstance(exc, ValueError) else exc.public_message)
 
@@ -647,7 +662,7 @@ async def update_reg38_scope(request: Request, project_id: str):
         Regulation38Repository(get_auth_service()).save_scope(token, project_id, str(form.get("scope_type") or "ENTIRE_BUILDING"),
             str(form.get("scope_description") or ""), str(form.get("building_reference") or ""),
             str(form.get("area_description") or ""), applicability)
-        return RedirectResponse(f"/app/regulation-38/projects/{project_id}/setup/upload-ifc", status_code=303)
+        return RedirectResponse(firetrace_wizard_url(project_id, 3), status_code=303)
     except SupabaseAuthError as exc: return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
 
@@ -719,7 +734,7 @@ async def remove_reg38_ifc(request: Request, project_id: str, file_id: str):
     if isinstance(user, RedirectResponse): return user
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     Regulation38Repository(get_auth_service()).remove_ifc(token, project_id, file_id, str(form.get("storage_path") or ""))
-    return RedirectResponse(wizard_url(project_id, 3), status_code=303)
+    return RedirectResponse(firetrace_wizard_url(project_id, 3), status_code=303)
 
 
 @router.post("/app/projects/{project_id}/regulation-38/spatial-acknowledgement")
@@ -729,7 +744,7 @@ async def acknowledge_missing_spatial_data(request: Request, project_id: str):
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     Regulation38Repository(get_auth_service()).acknowledge_missing_spatial_data(
         token, project_id, str(user.get("id") or ""))
-    return RedirectResponse(wizard_url(project_id, 5), status_code=303)
+    return RedirectResponse(firetrace_wizard_url(project_id, 5), status_code=303)
 
 
 @router.post("/app/projects/{project_id}/regulation-38/delete")
@@ -749,7 +764,7 @@ async def retry_reg38_ifc(request: Request, project_id: str, file_id: str):
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     try:
         Regulation38Repository(get_auth_service()).retry_model_scan(token, project_id, file_id)
-        return RedirectResponse(f"/app/regulation-38/projects/{project_id}/setup/model-scan", status_code=303)
+        return RedirectResponse(firetrace_wizard_url(project_id, 4), status_code=303)
     except SupabaseAuthError as exc:
         return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
@@ -766,7 +781,7 @@ async def update_reg38_space(request: Request, project_id: str, space_id: str):
             "description": str(form.get("description") or ""), "occupancy_type": str(form.get("occupancy_type") or ""),
             "occupancy_capacity": form.get("occupancy_capacity"), "high_risk": form.get("high_risk") == "yes",
             "included_in_reg38": form.get("included_in_reg38") == "yes"})
-        return RedirectResponse(f"{wizard_url(project_id, 5)}?selected=space:{space_id}", status_code=303)
+        return RedirectResponse(f"{firetrace_wizard_url(project_id, 5)}?selected=space:{space_id}", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
                             status_code=400 if isinstance(exc, ValueError) else exc.status_code)
@@ -781,7 +796,7 @@ async def create_reg38_zone(request: Request, project_id: str):
     try:
         zone_id = Regulation38Repository(get_auth_service()).create_zone(token, project_id, str(form.get("name") or ""),
             str(form.get("zone_type") or "USER_DEFINED"), [str(x) for x in form.getlist("space_ids")])
-        return RedirectResponse(f"{wizard_url(project_id, 5)}?selected=zone:{zone_id}", status_code=303)
+        return RedirectResponse(f"{firetrace_wizard_url(project_id, 5)}?selected=zone:{zone_id}", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
                             status_code=400 if isinstance(exc, ValueError) else exc.status_code)
@@ -796,7 +811,7 @@ async def update_reg38_zone(request: Request, project_id: str, zone_id: str):
     try:
         Regulation38Repository(get_auth_service()).update_zone(token, project_id, zone_id, str(form.get("name") or ""),
             str(form.get("zone_type") or "USER_DEFINED"), [str(x) for x in form.getlist("space_ids")])
-        return RedirectResponse(f"{wizard_url(project_id, 5)}?selected=zone:{zone_id}", status_code=303)
+        return RedirectResponse(f"{firetrace_wizard_url(project_id, 5)}?selected=zone:{zone_id}", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
                             status_code=400 if isinstance(exc, ValueError) else exc.status_code)

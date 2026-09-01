@@ -9,6 +9,7 @@ import pytest
 import app as app_module
 import ifc_app.saas as saas
 import ifc_app.supabase_auth as supabase_auth
+from ifc_app.firetrace_wizard import FIRETRACE_WIZARD_STEPS, firetrace_wizard_url
 
 
 @dataclass
@@ -394,10 +395,56 @@ def test_application_new_project_post_calls_rpc_and_redirects_to_scope(monkeypat
     })
     assert response.status_code == 303
     assert response.header("location") == (
-        "/app/regulation-38/projects/00000000-0000-4000-8000-000000000038/setup/scope"
+        "/app/firetrace/projects/00000000-0000-4000-8000-000000000038/setup/scope"
     )
     assert fake.created_project_data["name"] == "FireTrace House"
     assert fake.created_project_data["project_reference"] == "FT-038"
+
+
+def test_every_canonical_firetrace_wizard_route_renders_and_navigation_exists(monkeypatch):
+    """Exercise routing and rendering for every step, including the former NameError path."""
+    fake = Regulation38AdminAuth()
+    cookie = _admin_cookie(monkeypatch, fake)
+    project = {"id": "project-id", "name": "Draft FireTrace", "project_reference": "FT-1",
+               "project_status": "DRAFT", "spatial_ifc_unavailable": True}
+    repository = saas.Regulation38Repository
+    monkeypatch.setattr(repository, "get_project", lambda self, token, project_id: project)
+    monkeypatch.setattr(repository, "get_sections", lambda self, token, project_id: [])
+    monkeypatch.setattr(repository, "list_ifc_files", lambda self, token, project_id: [])
+    monkeypatch.setattr(repository, "model_scan", lambda self, token, project_id, user_id: {
+        "file": None, "job": None, "warnings": []})
+    monkeypatch.setattr(repository, "spatial_review", lambda self, token, project_id: {
+        "spaces": [], "zones": [], "grids": [], "members": [], "can_admin": True})
+
+    for index, (slug, _) in enumerate(FIRETRACE_WIZARD_STEPS, 1):
+        response = request("GET", firetrace_wizard_url("project-id", index), headers={"cookie": cookie})
+        assert response.status_code == 200, slug
+        if index > 1:
+            assert firetrace_wizard_url("project-id", index - 1) in response.text
+        if index < len(FIRETRACE_WIZARD_STEPS) and index not in {1, 2, 3, 4, 5}:
+            assert firetrace_wizard_url("project-id", index + 1) in response.text
+
+
+def test_dashboard_continue_setup_and_legacy_wizard_routes_are_canonical(monkeypatch):
+    fake = Regulation38AdminAuth()
+    cookie = _admin_cookie(monkeypatch, fake)
+    project = {"id": "project-id", "name": "Draft FireTrace", "project_reference": "FT-1",
+               "project_status": "DRAFT"}
+    monkeypatch.setattr(saas.Regulation38Repository, "get_project",
+                        lambda self, token, project_id: project)
+
+    dashboard = request("GET", "/app/firetrace/projects/project-id", headers={"cookie": cookie})
+    assert dashboard.status_code == 200
+    assert f'href="{firetrace_wizard_url("project-id", 1)}">Continue setup' in dashboard.text
+    for old_slug, (new_slug, _) in zip(
+        ("details", "scope", "upload-ifc", "model-scan", "spaces-zones", "fire-construction",
+         "plans", "information-requirements", "summary"),
+        FIRETRACE_WIZARD_STEPS,
+    ):
+        legacy = request("GET", f"/app/regulation-38/projects/project-id/setup/{old_slug}",
+                         headers={"cookie": cookie})
+        assert legacy.status_code == 308
+        assert legacy.header("location") == f"/app/firetrace/projects/project-id/setup/{new_slug}"
 
 
 def test_member_cannot_see_create_or_open_direct_wizard(monkeypatch):
@@ -485,7 +532,7 @@ def test_finalized_ifc_model_scan_get_returns_200_without_admin_user_lookup(monk
 
     fake = ModelScanRouteAuth()
     cookie = _admin_cookie(monkeypatch, fake)
-    response = request("GET", "/app/regulation-38/projects/project-id/setup/model-scan",
+    response = request("GET", "/app/firetrace/projects/project-id/setup/model-scan",
                        headers={"cookie": cookie})
     assert response.status_code == 200
     assert "Model Scan" in response.text
