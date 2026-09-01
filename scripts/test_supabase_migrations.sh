@@ -11,6 +11,7 @@ DB_PREFIX="reg38_migration_test_$$"
 cleanup() {
   "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_fresh" >/dev/null
   "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_legacy" >/dev/null
+  "${PSQL[@]}" -c "drop database if exists ${DB_PREFIX}_fire_drift" >/dev/null
 }
 trap cleanup EXIT
 
@@ -76,4 +77,21 @@ done
 psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_legacy" \
   -f "$ROOT/tests/sql/assert_reg38_legacy_preserved.sql" >/dev/null
 
-echo "Fresh and legacy Regulation 38 migration chains passed."
+# Reproduce the exact production history collision: the lifecycle file with
+# version 202609010001 was applied, while Supabase skipped the later Fire
+# Strategy file carrying the same version. The new reconciliation must repair
+# that schema and remain safe if it is evaluated again.
+bootstrap "${DB_PREFIX}_fire_drift"
+for migration in "$ROOT"/supabase/migrations/*.sql; do
+  [[ "$migration" == *202609010001_fire_strategy_review.sql ]] && continue
+  [[ "$migration" == *202609011300_fire_strategy_schema_reconciliation.sql ]] && continue
+  psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fire_drift" -f "$migration" >/dev/null
+done
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fire_drift" \
+  -f "$ROOT/supabase/migrations/202609011300_fire_strategy_schema_reconciliation.sql" >/dev/null
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fire_drift" \
+  -f "$ROOT/supabase/migrations/202609011300_fire_strategy_schema_reconciliation.sql" >/dev/null
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fire_drift" \
+  -f "$ROOT/tests/sql/assert_fire_strategy_reconciliation.sql" >/dev/null
+
+echo "Fresh, legacy, and Fire Strategy drift migration chains passed."
