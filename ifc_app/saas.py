@@ -508,7 +508,7 @@ def _wizard_response(request: Request, user: dict[str, Any], project: dict[str, 
               "wizard_steps": FIRETRACE_WIZARD_STEPS,
               "wizard_routes": {n: firetrace_wizard_url(project_id, n)
                                 for n in range(1, len(FIRETRACE_WIZARD_STEPS) + 1)},
-              "sections": [], "files": [], "error": None}
+              "sections": [], "files": [], "error": None, "progress": None, "scope": None}
     values.update(extra)
     return templates.TemplateResponse(request=request, name="firetrace/setup/wizard.html",
         context=_dashboard_context(request, user, **values))
@@ -560,12 +560,19 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
         repo = Regulation38Repository(get_auth_service())
         project = repo.get_project(token, project_id)
         if not project: return HTMLResponse("Project not found.", status_code=404)
+        progress = repo.firetrace_progress(token, project)
         sections = repo.get_sections(token, project_id) if step == 2 else []
+        scope = repo.get_scope(token, project_id) if step == 2 else None
         files = repo.list_ifc_files(token, project_id) if step == 3 else []
+        if step == 3 and progress.model and progress.job:
+            for file in files:
+                if str(file.get("id")) == str(progress.model.get("id")):
+                    file["ifc_processing_jobs"] = [dict(progress.job)]
         model_scan = repo.model_scan(token, project_id, str(user.get("id") or "")) if step == 4 else {}
         spatial = repo.spatial_review(token, project_id) if step == 5 else {}
         return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files,
-                                model_scan=model_scan, spatial=spatial, zone_types=ZONE_TYPES)
+                                model_scan=model_scan, spatial=spatial, zone_types=ZONE_TYPES,
+                                progress=progress, scope=scope)
     except SupabaseAuthError as exc:
         status = 403 if exc.status_code in {401, 403} else 404 if exc.status_code == 404 and exc.public_message == "Project not found." else 503 if exc.status_code == 503 else 502
         return HTMLResponse(exc.public_message, status_code=status)
@@ -594,9 +601,11 @@ def firetrace_project_dashboard(request: Request, project_id: str):
         project = repo.get_project(token, project_id)
         if not project:
             return HTMLResponse("Project not found.", status_code=404)
+        progress = repo.firetrace_progress(token, project)
         return templates.TemplateResponse(request=request, name="firetrace/project.html",
             context=_dashboard_context(request, user, project=project, project_id=project_id,
-                                       setup_url=firetrace_wizard_url(project_id, 1), routes=FIRETRACE_ROUTES))
+                                       setup_url=firetrace_wizard_url(project_id, firetrace_wizard_step(progress.resume_step) or 1),
+                                       progress=progress, routes=FIRETRACE_ROUTES))
     except SupabaseAuthError as exc:
         return HTMLResponse(exc.public_message, status_code=exc.status_code)
 

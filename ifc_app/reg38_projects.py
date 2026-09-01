@@ -14,6 +14,7 @@ from uuid import uuid4
 import requests
 
 from ifc_app.supabase_auth import SupabaseAuthError, SupabaseAuthService
+from ifc_app.firetrace_wizard import FireTraceProgress, get_firetrace_resume_step
 
 REG38_DEFAULT_SECTIONS: tuple[tuple[str, str], ...] = (
     ("PROJECT_BUILDING_INFORMATION", "Project & Building Information"), ("FIRE_SAFETY_STRATEGY", "Fire Safety Strategy"),
@@ -241,8 +242,25 @@ class Regulation38Repository:
         self._data_request("PATCH", f"projects?id=eq.{quote(project_id)}", token, json=dict(values))
 
     def get_sections(self, token: str, project_id: str) -> list[dict[str, Any]]:
-        rows = self._data_request("GET", f"reg38_sections?project_id=eq.{quote(project_id)}&select=id,section_key,name,enabled,applicability_status,sort_order&order=sort_order", token)
+        rows = self._data_request("GET", f"reg38_sections?project_id=eq.{quote(project_id)}&select=id,section_key,name,enabled,applicability_status,completion_status,sort_order&order=sort_order", token)
         return [dict(row) for row in rows] if isinstance(rows, list) else []
+
+    def get_scope(self, token: str, project_id: str) -> dict[str, Any] | None:
+        rows = self._data_request("GET", f"reg38_project_scope?project_id=eq.{quote(project_id)}&select=*&limit=1", token)
+        return dict(rows[0]) if isinstance(rows, list) and rows else None
+
+    def firetrace_progress(self, token: str, project: Mapping[str, Any]) -> FireTraceProgress:
+        """Load the authoritative progression snapshot used by every entry point."""
+        project_id = str(project["id"])
+        scope = self.get_scope(token, project_id)
+        sections = self.get_sections(token, project_id)
+        files = self.list_ifc_files(token, project_id)
+        model = files[0] if files else None
+        job = None
+        if model:
+            rows = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(model['id']))}&select=*&order=created_at.desc&limit=1", token)
+            job = dict(rows[0]) if isinstance(rows, list) and rows else None
+        return get_firetrace_resume_step(project, scope, model, job, sections)
 
     def save_scope(self, token: str, project_id: str, scope_type: str, scope_description: str,
                    building_reference: str, area_description: str, applicability: Mapping[str, str]) -> None:
