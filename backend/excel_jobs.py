@@ -96,10 +96,11 @@ class ExcelJobStore:
         result_path = self.root / f"{job_id}.result.json"
         command = [sys.executable, "-m", "backend.excel_job_runner", str(spec_path), str(result_path)]
         started = time.monotonic()
-        LOGGER.info("EXCEL_EXTRACTION_PARENT_MEMORY job_id=%s web_rss_mb=%s worker_ifc_loaded=false", job_id, _rss_mb())
+        event = "IFC_WRITEBACK" if job.get("kind") == "update" else "EXCEL_EXTRACTION"
+        LOGGER.info("%s_PARENT_MEMORY job_id=%s web_rss_mb=%s worker_ifc_loaded=false", event, job_id, _rss_mb())
         completed = subprocess.run(command, cwd=str(Path(__file__).resolve().parents[1]), check=False)
         elapsed = time.monotonic() - started
-        LOGGER.info("EXCEL_EXTRACTION_PARENT_MEMORY job_id=%s web_rss_mb=%s worker_finished=true", job_id, _rss_mb())
+        LOGGER.info("%s_PARENT_MEMORY job_id=%s web_rss_mb=%s worker_finished=true", event, job_id, _rss_mb())
         if completed.returncode != 0:
             if completed.returncode < 0:
                 reason = f"worker terminated by signal {-completed.returncode}"
@@ -108,7 +109,7 @@ class ExcelJobStore:
             else:
                 reason = f"worker exited with code {completed.returncode}"
             self._update(job_id, status="failed", progress=100, message=f"Processing failed: {reason}. You can retry.", error=reason, recoverable=True)
-            LOGGER.error("EXCEL_EXTRACTION_FAILED job_id=%s session_id=%s file=%s size_bytes=%s elapsed_s=%.3f reason=%s", job_id, job.get("session_id"), job.get("input_filename"), job.get("input_size"), elapsed, reason)
+            LOGGER.error("%s_FAILED job_id=%s session_id=%s file=%s size_bytes=%s elapsed_s=%.3f reason=%s", event, job_id, job.get("session_id"), job.get("input_filename"), job.get("input_size"), elapsed, reason)
             return
         try:
             result = json.loads(result_path.read_text(encoding="utf-8"))
@@ -116,6 +117,11 @@ class ExcelJobStore:
             self._update(job_id, status="failed", progress=100, message="Worker did not return a valid result. You can retry.", error=str(exc), recoverable=True)
             return
         if result.get("status") == "completed":
-            self._update(job_id, status="completed", progress=100, message="Complete", output_file_id=result.get("output_file_id"), result=result.get("result"), recoverable=False)
+            details = result.get("result") or {}
+            self._update(job_id, status="completed", progress=100, message=details.get("message", "Complete"), output_file_id=result.get("output_file_id"), result=details,
+                         warnings=details.get("warnings", []), errors=[], recoverable=False)
+            LOGGER.info("%s_JOB_SUCCESS job_id=%s output_file_id=%s warnings=%d", event, job_id, result.get("output_file_id"), len(details.get("warnings", [])))
         else:
-            self._update(job_id, status="failed", progress=100, message=result.get("message") or "Processing failed. You can retry.", error=result.get("error"), recoverable=True)
+            self._update(job_id, status="failed", progress=100, message=result.get("message") or "Processing failed. You can retry.", error=result.get("error"),
+                         errors=result.get("errors", []), warnings=result.get("warnings", []), recoverable=True)
+            LOGGER.error("%s_JOB_FAILURE job_id=%s error=%s", event, job_id, result.get("error"))

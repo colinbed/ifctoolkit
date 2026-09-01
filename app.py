@@ -2186,37 +2186,77 @@ def _set_element_presentation_layer(ifc, elem, target_layer_name: str, mode: str
     return diagnostics
 
 
+class ExcelWritebackValidationError(ValueError):
+    def __init__(self, findings: Dict[str, List[Dict[str, Any]]]):
+        self.findings = findings
+        summary = "; ".join(item["message"] for item in findings.get("errors", []))
+        super().__init__(f"Workbook validation failed: {summary}")
+
+
 def validate_excel_import_data(
     ifc: ifcopenshell.file,
     elements_df: pd.DataFrame,
     cobie_df: pd.DataFrame,
     project_df: pd.DataFrame,
-) -> List[str]:
-    issues: List[str] = []
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Validate fields which are needed to safely address the source model.
+
+    Optional values are deliberately warnings: an empty spreadsheet cell means
+    "no change" during write-back, not deletion.
+    """
+    errors: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
+
+    def finding(target, sheet, row, field, message):
+        target.append({"level": "error" if target is errors else "warning", "sheet": sheet,
+                       "row": row, "field": field, "message": message})
+
     if "DataType" not in project_df.columns:
-        issues.append("ProjectData sheet is missing DataType column.")
+        finding(errors, "ProjectData", None, "DataType", "Required column is missing.")
     else:
         project_rows = project_df[project_df["DataType"] == "Project"]
         if project_rows.empty:
-            issues.append("ProjectData sheet does not contain a Project row.")
+            finding(errors, "ProjectData", None, "DataType", "Project row is missing.")
+        elif len(project_rows) > 1:
+            finding(errors, "ProjectData", None, "DataType", "More than one Project row is ambiguous.")
         elif "ProjectNumber" in project_df.columns:
             project_number = clean_value(project_rows.iloc[0].get("ProjectNumber"))
             if project_number is None:
-                issues.append("ProjectData.ProjectNumber is blank for Project row.")
+                source_number = clean_value(getattr(ifc.by_type("IfcProject")[0], "LongName", None)) if len(ifc.by_type("IfcProject")) == 1 else None
+                action = "the existing IFC value will be preserved" if source_number is not None else "the optional field will remain unset"
+                finding(warnings, "ProjectData", int(project_rows.index[0]) + 2, "ProjectNumber",
+                        f"Blank optional value; {action}.")
         else:
-            issues.append("ProjectData sheet is missing ProjectNumber column.")
+            finding(warnings, "ProjectData", None, "ProjectNumber",
+                    "Optional column is missing; the existing IFC value will be preserved.")
 
     if "GlobalId" not in elements_df.columns:
-        issues.append("Elements sheet is missing GlobalId column.")
+        finding(errors, "Elements", None, "GlobalId", "Required entity identifier column is missing.")
     else:
-        missing_guid_count = int(elements_df["GlobalId"].isna().sum())
-        if missing_guid_count:
-            issues.append(f"Elements sheet has {missing_guid_count} rows with blank GlobalId.")
+        seen = set()
+        for idx, value in elements_df["GlobalId"].items():
+            guid = clean_value(value)
+            row_number = int(idx) + 2
+            if guid is None:
+                finding(errors, "Elements", row_number, "GlobalId", "Entity identifier is blank.")
+                continue
+            guid = str(guid)
+            if guid in seen:
+                finding(errors, "Elements", row_number, "GlobalId", "Duplicate entity identifier.")
+                continue
+            seen.add(guid)
+            try:
+                resolved = ifc.by_guid(guid)
+            except Exception:
+                resolved = None
+            if resolved is None:
+                finding(errors, "Elements", row_number, "GlobalId", "Entity identifier does not resolve in the source IFC.")
 
     for col in ("IFCElement.Name", "IFCElementType.Name"):
         if col in cobie_df.columns and cobie_df[col].isna().any():
-            issues.append(f"COBieMapping.{col} has blank values.")
-    return issues
+            finding(warnings, "COBieMapping", None, col,
+                    "Blank optional values are ignored and existing IFC values are preserved.")
+    return {"errors": errors, "warnings": warnings}
 
 
 def _resolve_class_mapping_candidate(elem: Any, row: pd.Series) -> Tuple[str, str]:
@@ -2354,6 +2394,11 @@ def update_ifc_from_excel(
     started_at = time.monotonic()
     ifc_path = path_of(ifc_file)
     xls_path = path_of(excel_file)
+    if not os.path.isfile(ifc_path):
+        raise ValueError("A source IFC is required for update mode; source-free IFC creation is not supported by this workflow.")
+    if os.path.abspath(ifc_path) == os.path.abspath(output_path):
+        raise ValueError("The output IFC must use a separate path from the source IFC.")
+    source_digest = hashlib.sha256(Path(ifc_path).read_bytes()).hexdigest()
     file_size = os.path.getsize(ifc_path) if os.path.exists(ifc_path) else None
     log_memory_stage(stage="file upload received", session_id=session_id, file_name=os.path.basename(ifc_path), file_size=file_size, endpoint=endpoint, started_at=started_at)
     enforce_upload_limits(ifc_path, endpoint=endpoint)
@@ -2364,6 +2409,12 @@ def update_ifc_from_excel(
     _check_heavy_timeout(started_at, endpoint)
 
     xls = pd.ExcelFile(xls_path)
+    required_sheets = {"Elements", "Properties", "COBieMapping", "ProjectData"}
+    missing_sheets = sorted(required_sheets - set(xls.sheet_names))
+    if missing_sheets:
+        findings = {"errors": [{"level": "error", "sheet": name, "row": None, "field": None,
+                                 "message": "Required worksheet is missing."} for name in missing_sheets], "warnings": []}
+        raise ExcelWritebackValidationError(findings)
     elements_df = pd.read_excel(xls, "Elements", usecols=lambda c: c is not None)
     try:
         types_df = pd.read_excel(xls, "Types", usecols=lambda c: c is not None)
@@ -2393,13 +2444,35 @@ def update_ifc_from_excel(
         except Exception:
             uniclass_ef_df = None
 
-    validation_issues = validate_excel_import_data(ifc, elements_df, cobie_df, project_df)
-    if validation_issues:
-        raise ValueError("Excel validation failed: " + "; ".join(validation_issues))
+    projects = ifc.by_type("IfcProject")
+    if len(projects) != 1:
+        findings = {"errors": [{"level": "error", "sheet": "ProjectData", "row": None,
+                                 "field": "DataType", "message": f"Source IFC must contain exactly one IfcProject; found {len(projects)}."}],
+                    "warnings": []}
+        raise ExcelWritebackValidationError(findings)
+    APP_LOGGER.info("IFC_WRITEBACK_VALIDATION_STARTED source=%s workbook=%s mode=update", os.path.basename(ifc_path), os.path.basename(xls_path))
+    findings = validate_excel_import_data(ifc, elements_df, cobie_df, project_df)
+    for item in findings["warnings"]:
+        APP_LOGGER.warning("IFC_WRITEBACK_VALIDATION_WARNING sheet=%s row=%s field=%s message=%s",
+                           item["sheet"], item["row"], item["field"], item["message"])
+        if "preserved" in item["message"]:
+            APP_LOGGER.info("IFC_WRITEBACK_BLANK_VALUE_PRESERVED sheet=%s row=%s field=%s",
+                            item["sheet"], item["row"], item["field"])
+    if findings["errors"]:
+        for item in findings["errors"]:
+            APP_LOGGER.error("IFC_WRITEBACK_VALIDATION_ERROR sheet=%s row=%s field=%s message=%s",
+                             item["sheet"], item["row"], item["field"], item["message"])
+        raise ExcelWritebackValidationError(findings)
+    APP_LOGGER.info("IFC_WRITEBACK_VALIDATION_COMPLETED errors=0 warnings=%d", len(findings["warnings"]))
 
-    project = ifc.by_type("IfcProject")[0]
+    project = projects[0]
+    source_schema = (ifc.schema or "").upper()
+    baseline_metadata: Dict[str, Dict[str, Any]] = {}
     site = ifc.by_type("IfcSite")[0] if ifc.by_type("IfcSite") else None
     building = ifc.by_type("IfcBuilding")[0] if ifc.by_type("IfcBuilding") else None
+    for label, entity in (("Project", project), ("Site", site), ("Building", building)):
+        if entity is not None:
+            baseline_metadata[label] = {name: clean_value(getattr(entity, name, None)) for name in ("Name", "Description", "Phase", "LongName") if hasattr(entity, name)}
     header_meta = parse_ifc_header_metadata(ifc_path)
     detected_schema = (ifc.schema or header_meta.get("schema") or "").upper()
     APP_LOGGER.info("EN Entities write-back detected schema=%s header=%s", detected_schema, header_meta)
@@ -2689,8 +2762,9 @@ def update_ifc_from_excel(
             elem.Description = clean_value(row["TypeDescription"]) or elem.Description
         if "IFCPresentationLayer" in elements_df.columns and pd.notna(row.get("IFCPresentationLayer")):
             _set_element_presentation_layer(ifc, elem, row.get("IFCPresentationLayer"), mode="replace")
-        if pd.notna(row.get("TypeName")):
-            type_name = str(clean_value(row["TypeName"]))
+        type_name_value = clean_value(row.get("TypeName"))
+        if type_name_value is not None:
+            type_name = str(type_name_value)
             type_obj = None
             for rel in ifc.get_inverse(elem):
                 if rel.is_a("IfcRelDefinesByType"):
@@ -2749,9 +2823,9 @@ def update_ifc_from_excel(
                 continue
 
             for col in candidate_cols:
-                if pd.isna(row.get(col)):
+                val = clean_value(row.get(col))
+                if val is None:
                     continue
-                val = row[col]
                 pset, pname = col.split(".", 1)
                 pset, pname = pset.strip(), pname.strip()
 
@@ -2777,9 +2851,9 @@ def update_ifc_from_excel(
                     except Exception:
                         pass
             for field_name in CIVIL3D_EXTENDED_FIELDS:
-                if field_name not in row or pd.isna(row.get(field_name)):
+                val = clean_value(row.get(field_name))
+                if field_name not in row or val is None:
                     continue
-                val = row.get(field_name)
                 try:
                     psets = ifcopenshell.util.element.get_psets(elem)
                     if "Additional_Pset_GeneralCommon" not in psets and add_new == "yes":
@@ -2861,6 +2935,8 @@ def update_ifc_from_excel(
     if protocol_change_rows:
         change_log_rows.extend(protocol_change_rows)
 
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    APP_LOGGER.info("IFC_WRITEBACK_WRITE_STARTED output=%s", os.path.basename(output_path))
     ifc.write(output_path)
     log_memory_stage(stage="IFC write/export", session_id=session_id, file_name=os.path.basename(output_path), file_size=os.path.getsize(output_path), endpoint=endpoint, started_at=started_at)
     if en_entities_value:
@@ -2869,13 +2945,47 @@ def update_ifc_from_excel(
         if not valid_en_entities:
             raise ValueError(validation_message)
 
+    APP_LOGGER.info("IFC_WRITEBACK_VERIFICATION_STARTED output=%s", os.path.basename(output_path))
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
+        raise ValueError("Output verification failed: IFC file is missing or empty.")
+    verified = ifcopenshell.open(output_path)
+    verified_projects = verified.by_type("IfcProject")
+    if len(verified_projects) != 1:
+        raise ValueError(f"Output verification failed: expected exactly one IfcProject, found {len(verified_projects)}.")
+    if (verified.schema or "").upper() != source_schema:
+        raise ValueError(f"Output verification failed: schema changed from {source_schema} to {verified.schema}.")
+    verified_by_type = {"Project": verified_projects[0],
+                        "Site": verified.by_type("IfcSite")[0] if verified.by_type("IfcSite") else None,
+                        "Building": verified.by_type("IfcBuilding")[0] if verified.by_type("IfcBuilding") else None}
+    field_map = {"Name": "Name", "Description": "Description", "Phase": "Phase", "ProjectNumber": "LongName"}
+    for _, row in project_df.iterrows():
+        label = clean_value(row.get("DataType"))
+        entity = verified_by_type.get(label)
+        if entity is None:
+            continue
+        for excel_field, ifc_attr in field_map.items():
+            if not hasattr(entity, ifc_attr) or excel_field not in project_df.columns:
+                continue
+            requested = clean_value(row.get(excel_field))
+            actual = clean_value(getattr(entity, ifc_attr, None))
+            if requested is not None and str(actual) != str(requested):
+                raise ValueError(f"Output verification failed: expected edited {label}.{excel_field} was not written.")
+            if requested is None and label in baseline_metadata and actual != baseline_metadata[label].get(ifc_attr):
+                raise ValueError(f"Output verification failed: blank {label}.{excel_field} did not preserve the source value.")
+    if hashlib.sha256(Path(ifc_path).read_bytes()).hexdigest() != source_digest:
+        raise ValueError("Source protection check failed: the source IFC was modified.")
+    output_size = os.path.getsize(output_path)
+    APP_LOGGER.info("IFC_WRITEBACK_VERIFICATION_COMPLETED schema=%s project_count=1 size_bytes=%d", source_schema, output_size)
+    APP_LOGGER.info("IFC_WRITEBACK_WRITE_COMPLETED output_path=%s filename=%s size_bytes=%d", output_path, os.path.basename(output_path), output_size)
+
     xls.close()
     if change_log_rows:
         with pd.ExcelWriter(xls_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
             pd.DataFrame(change_log_rows).to_excel(writer, sheet_name="ChangeLog", index=False)
     if gc is not None:
         gc.collect()
-    return output_path
+    return {"output_path": output_path, "warnings": findings["warnings"], "errors": [],
+            "message": "IFC updated successfully."}
 
 
 # ----------------------------------------------------------------------------
@@ -8429,7 +8539,7 @@ def get_excel_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {key: job.get(key) for key in (
-        "job_id", "status", "progress", "message", "output_file_id", "error", "recoverable", "kind"
+        "job_id", "status", "progress", "message", "output_file_id", "error", "errors", "warnings", "recoverable", "kind"
     )}
 
 
