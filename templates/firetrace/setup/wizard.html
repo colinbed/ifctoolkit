@@ -5,7 +5,7 @@
   <div class="wizard-heading"><div><span class="eyebrow">FIRETRACE PROJECT SETUP</span><h1>{{ project.name or 'New FireTrace Project' }}</h1>{% if not project_id %}<p>Create and configure a FireTrace information workspace.</p>{% endif %}</div><a href="/app/firetrace">Save & exit</a></div>
   <ol class="stepper">{% for label in steps %}<li class="{% if loop.index == step %}active{% elif loop.index < step %}done{% endif %}"><span>{{ loop.index }}</span><small>{{ label }}</small></li>{% endfor %}</ol>
   <div class="wizard-card">
-    <header><span>{{ "%02d"|format(step) }} / 09 · FIRETRACE PROJECT SETUP</span><h2>{{ steps[step-1] }}</h2></header>
+    <header><span>{{ "%02d"|format(step) }} / {{ "%02d"|format(steps|length) }} · FIRETRACE PROJECT SETUP</span><h2>{{ steps[step-1] }}</h2></header>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     {% if step == 1 %}
       <form method="post" action="{% if project_id %}/app/firetrace/projects/{{ project_id }}/details{% else %}/app/firetrace/projects/new{% endif %}">
@@ -26,7 +26,7 @@
         <fieldset><legend>Scope Type</legend>{% for value,label in [('ENTIRE_BUILDING','Entire building'),('EXTENSION_REFURBISHMENT','Extension / refurbishment'),('SPECIFIC_BUILDING','Specific building / block'),('SPECIFIC_ZONES','Specific storeys or zones'),('OTHER','Other')] %}<label class="choice"><input type="radio" name="scope_type" value="{{ value }}" {% if (project.reg38_scope_type or 'ENTIRE_BUILDING') == value %}checked{% endif %}> {{ label }}</label>{% endfor %}<label>Scope description<textarea name="scope_description" placeholder="New three-storey teaching block including connections into the existing east wing.">{{ project.reg38_scope_detail or '' }}</textarea></label><label>Building / block reference<input name="building_reference"></label><label>Storey / area description<input name="area_description"></label></fieldset>
         <fieldset><legend>Regulation 38 information areas</legend><div class="section-applicability">{% for section in sections %}<label><span>{{ loop.index }}. {{ section.name }}</span><select name="applicability_{{ section.section_key }}"><option value="APPLICABLE" {% if section.applicability_status == 'APPLICABLE' %}selected{% endif %}>Applicable</option><option value="NOT_APPLICABLE" {% if section.applicability_status == 'NOT_APPLICABLE' %}selected{% endif %}>Not Applicable</option><option value="TO_BE_CONFIRMED" {% if section.applicability_status == 'TO_BE_CONFIRMED' %}selected{% endif %}>To Be Confirmed</option></select></label>{% endfor %}</div></fieldset>
         <p class="notice">Requirements vary according to the building and works. These selections support information management and completeness review and do not constitute a compliance determination.</p>
-        <div class="wizard-actions"><a class="button ghost" href="?step=1">Back</a><button class="button">Save & Next</button></div>
+        <div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[1] }}">Back</a><button class="button">Save & Next</button></div>
       </form>
     {% elif step == 3 %}
       {% set ready = namespace(value=false) %}{% for file in files %}{% if file.status == 'UPLOADED' and file.ifc_processing_jobs %}{% set ready.value = true %}{% endif %}{% endfor %}
@@ -39,13 +39,13 @@
         <div id="ifc-upload-status" class="upload-state" aria-live="polite"></div>
       </div>
       <div class="file-list" id="ifc-file-list">{% for file in files %}<article data-file-id="{{ file.id }}"><div><strong>✓ Design model uploaded</strong><span>{{ file.original_filename }}</span><small>{{ '%.1f'|format(file.file_size / 1048576) }} MB · Status: Queued for model scan</small></div>{% if file.ifc_processing_jobs and file.ifc_processing_jobs[0].status == 'QUEUED' %}<form method="post" action="/app/firetrace/projects/{{ project_id }}/ifc/{{ file.id }}/remove"><input type="hidden" name="storage_path" value="{{ file.storage_path }}"><button class="link replace-ifc" type="button">Replace Model</button><button class="link danger">Remove</button></form>{% endif %}</article>{% endfor %}</div>
-      <div class="wizard-actions"><a class="button ghost" href="?step=2">Back</a><a id="ifc-next" class="button{% if not ready.value %} disabled{% endif %}" {% if ready.value %}href="/app/firetrace/projects/{{ project_id }}/setup/model-scan"{% else %}aria-disabled="true" tabindex="-1"{% endif %}>Next: Model Scan</a></div>
+      <div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[2] }}">Back</a><a id="ifc-next" class="button{% if not ready.value %} disabled{% endif %}" {% if ready.value %}href="{{ wizard_routes[4] }}"{% else %}aria-disabled="true" tabindex="-1"{% endif %}>Next: Model Scan</a></div>
       <script src="/static/reg38-ifc-upload.js"></script>
     {% elif step == 4 %}
       {% include "saas/reg38_model_scan.html" %}
     {% elif step == 5 %}
       {% include "saas/reg38_spatial_review.html" %}
-    {% else %}<div class="pending"><span>{{ step }}</span><h3>{{ steps[step-1] }}</h3><p>Model processing has not yet been implemented.</p></div><div class="wizard-actions"><a class="button ghost" href="?step={{ step-1 }}">Back</a>{% if step < 9 %}<a class="button" href="?step={{ step+1 }}">Next</a>{% else %}<a class="button" href="/app/projects">Return to projects</a>{% endif %}</div>{% endif %}
+    {% else %}<div class="pending"><span>{{ step }}</span><h3>{{ steps[step-1] }}</h3><p>Model processing has not yet been implemented.</p></div><div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[step-1] }}">Back</a>{% if step < steps|length %}<a class="button" href="{{ wizard_routes[step+1] }}">Next</a>{% else %}<a class="button" href="/app/firetrace/projects/{{ project_id }}">Return to project</a>{% endif %}</div>{% endif %}
   </div>
 </section>
 {% endblock %}

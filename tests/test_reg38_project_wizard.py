@@ -4,6 +4,7 @@ import pytest
 
 import ifc_app.reg38_projects as module
 import ifc_app.saas as saas
+from ifc_app.firetrace_wizard import FIRETRACE_WIZARD_STEPS, firetrace_wizard_url
 from ifc_app.reg38_projects import ProjectCreate, Regulation38Repository, validate_ifc
 
 
@@ -323,7 +324,7 @@ def _render_model_scan(status, warnings=None, spaces=1, acknowledged=False):
     return saas.templates.env.get_template("saas/reg38_model_scan.html").render(
         project_id="project-id",
         project={"spatial_ifc_unavailable": acknowledged},
-        wizard_routes={n: saas.wizard_url("project-id", n) for n in range(1, 10)},
+        wizard_routes={n: firetrace_wizard_url("project-id", n) for n in range(1, 10)},
         model_scan={
             "file": {"id": "model-id", "storage_path": "projects/project-id/models/model-id/original/model.ifc"},
             "job": ({"status": status, "statistics": {"spaces": spaces}} if status else None),
@@ -335,8 +336,8 @@ def _render_model_scan(status, warnings=None, spaces=1, acknowledged=False):
 def test_completed_model_scan_shows_continue_to_step_five():
     html = _render_model_scan("COMPLETED")
     assert ">Continue</a>" in html
-    assert 'href="/app/regulation-38/projects/project-id/setup/spaces-zones"' in html
-    assert 'href="/app/regulation-38/projects/project-id/setup/upload-ifc">Back</a>' in html
+    assert 'href="/app/firetrace/projects/project-id/setup/spatial"' in html
+    assert 'href="/app/firetrace/projects/project-id/setup/model">Back</a>' in html
 
 
 def test_completed_zero_space_scan_requires_explicit_choice():
@@ -376,7 +377,7 @@ def test_step_five_named_setup_route_dispatches_to_spatial_review(monkeypatch):
     monkeypatch.setattr(saas, "regulation_38_project", lambda request, project_id, step: captured.update(
         request=request, project_id=project_id, step=step) or "step-five")
     request = object()
-    assert saas.regulation_38_setup(request, "project-id", "spaces-zones") == "step-five"
+    assert saas.regulation_38_setup(request, "project-id", "spatial") == "step-five"
     assert captured == {"request": request, "project_id": "project-id", "step": 5}
 
 
@@ -393,10 +394,8 @@ def test_every_wizard_step_has_a_forward_action():
 
 
 def test_all_adjacent_wizard_routes_are_canonical():
-    expected = ("details", "scope", "upload-ifc", "model-scan", "spaces-zones",
-                "fire-construction", "plans", "information-requirements", "summary")
-    for step, slug in enumerate(expected, 1):
-        assert saas.wizard_url("project-id", step).endswith(f"/setup/{slug}")
+    for step, (slug, _) in enumerate(FIRETRACE_WIZARD_STEPS, 1):
+        assert firetrace_wizard_url("project-id", step).endswith(f"/setup/{slug}")
     assert "wizard_routes[4]" in open("templates/saas/reg38_spatial_review.html", encoding="utf-8").read()
 
 
