@@ -400,7 +400,8 @@ class Regulation38Repository:
 
     def project_role(self, token: str, project_id: str) -> str | None:
         rows = self._data_request("GET", f"project_members?project_id=eq.{quote(project_id)}&select=role", token)
-        return str(rows[0].get("role")) if isinstance(rows, list) and rows else None
+        role = rows[0].get("role") if isinstance(rows, list) and rows else None
+        return str(role) if role is not None else None
 
     def model_scan(self, token: str, project_id: str, authenticated_user_id: str = "") -> dict[str, Any]:
         """Load scan prerequisites using RLS membership, without an Admin Auth lookup."""
@@ -463,6 +464,16 @@ class Regulation38Repository:
         return {"spaces": spaces if isinstance(spaces, list) else [], "zones": zones if isinstance(zones, list) else [],
                 "grids": grids if isinstance(grids, list) else [], "members": members if isinstance(members, list) else [],
                 "can_admin": self.project_role(token, project_id) in {"OWNER", "ADMIN"}}
+
+    def spatial_storey_plan(self, token: str, project_id: str, storey_id: str) -> dict[str, Any]:
+        """Return persisted lightweight geometry for one authorised storey."""
+        if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You cannot access this project.", status_code=403)
+        rows = self._data_request("GET", f"project_spaces?project_id=eq.{quote(project_id)}&storey_id=eq.{quote(storey_id)}"
+                                  "&select=id,storey_id,space_number,name,source_geometry&order=name", token)
+        spaces = rows if isinstance(rows, list) else []
+        return {"project_id": project_id, "storey_id": storey_id, "spaces": spaces,
+                "geometry_status": "available" if any((s.get("source_geometry") or {}).get("coordinates") for s in spaces) else "unavailable"}
 
     def update_space(self, token: str, project_id: str, space_id: str, values: Mapping[str, Any]) -> None:
         self.require_project_admin(token, project_id)

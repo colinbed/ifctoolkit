@@ -76,3 +76,47 @@ def test_only_project_admins_can_write_spatial_review(role):
         Regulation38Repository(auth).update_space("token", PROJECT, SPACE_1, {"name": "Changed"})
     assert exc.value.status_code == 403
     assert not any(call[0] == "PATCH" for call in auth.calls)
+
+
+def test_storey_plan_is_lightweight_and_scoped_to_project_and_storey():
+    class PlanAuth(SpatialAuth):
+        def _request_json(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if "project_members?" in url: return [{"role": "VIEWER"}]
+            if "project_spaces?" in url:
+                return [{"id": SPACE_1, "storey_id": "storey", "space_number": "01-101",
+                         "name": "Breakout", "source_geometry": {"type": "Polygon", "coordinates": [[0, 0], [5, 0], [5, 4], [0, 0]]}}]
+            return []
+    auth = PlanAuth()
+    plan = Regulation38Repository(auth).spatial_storey_plan("token", PROJECT, "storey")
+    assert plan["geometry_status"] == "available" and plan["spaces"][0]["id"] == SPACE_1
+    request_url = next(url for method, url, _ in auth.calls if "project_spaces?" in url)
+    assert f"project_id=eq.{PROJECT}" in request_url and "storey_id=eq.storey" in request_url
+    assert "source_geometry" in request_url and "ifc_objects" not in request_url
+
+
+def test_storey_plan_reports_explicit_missing_geometry_state():
+    class EmptyPlanAuth(SpatialAuth):
+        def _request_json(self, method, url, **kwargs):
+            if "project_members?" in url: return [{"role": "VIEWER"}]
+            if "project_spaces?" in url: return [{"id": SPACE_1, "source_geometry": {"coordinates": None}}]
+            return []
+    assert Regulation38Repository(EmptyPlanAuth()).spatial_storey_plan("token", PROJECT, "storey")["geometry_status"] == "unavailable"
+
+
+def test_storey_plan_denies_non_member_before_geometry_query():
+    auth = SpatialAuth(role=None)
+    with pytest.raises(SupabaseAuthError) as exc:
+        Regulation38Repository(auth).spatial_storey_plan("token", PROJECT, "storey")
+    assert exc.value.status_code == 403
+    assert not any("source_geometry" in url for _, url, _ in auth.calls)
+
+
+def test_spatial_template_has_fixed_workspace_panes_and_preview_states():
+    template = open("templates/saas/reg38_spatial_review.html", encoding="utf-8").read()
+    script = open("static/reg38-spatial.js", encoding="utf-8").read()
+    css = open("static/saas.css", encoding="utf-8").read()
+    for pane in ('class="structure-panel"', 'class="plan-panel"', 'class="details-panel"'):
+        assert pane in template
+    assert "Preview unavailable" in script and "selected" in script
+    assert "height:clamp(550px,calc(100vh - 330px),720px)" in css and "overflow-y:auto" in css

@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable
 from uuid import NAMESPACE_URL, uuid5
 
 import ifcopenshell
+import ifcopenshell.geom
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
 
@@ -136,6 +137,31 @@ def _centroid(obj: Any) -> dict[str, float] | None:
     except Exception:
         pass
     return None
+
+
+def _space_footprint(obj: Any) -> list[list[float]] | None:
+    """Create a lightweight XY hull once during Model Scan."""
+    try:
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+        vertices = list(ifcopenshell.geom.create_shape(settings, obj).geometry.verts)
+        points = sorted({(round(float(vertices[i]), 5), round(float(vertices[i + 1]), 5))
+                         for i in range(0, len(vertices), 3)})
+        if len(points) < 3:
+            return None
+        cross = lambda o, a, b: (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        lower: list[tuple[float, float]] = []
+        for point in points:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0: lower.pop()
+            lower.append(point)
+        upper: list[tuple[float, float]] = []
+        for point in reversed(points):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0: upper.pop()
+            upper.append(point)
+        hull = lower[:-1] + upper[:-1]
+        return [[x, y] for x, y in hull] + [[hull[0][0], hull[0][1]]] if len(hull) >= 3 else None
+    except Exception:
+        return None
 
 
 def _flatten_psets(obj: Any, scope: str) -> list[dict[str, Any]]:
@@ -289,7 +315,8 @@ class Regulation38IfcProcessor:
                 "gross_area": quantity(("GrossFloorArea",)), "net_area": quantity(("NetFloorArea",)),
                 "height": quantity(("Height", "FinishCeilingHeight", "GrossHeight")), "volume": quantity(("GrossVolume", "NetVolume")),
                 "centroid_x": c.get("x"), "centroid_y": c.get("y"), "centroid_z": c.get("z"),
-                "source_geometry": {"centroid": c, "footprint": None}})
+                "source_geometry": {"type": "Polygon", "coordinates": _space_footprint(obj), "centroid": c,
+                                    "coordinate_system": "world"}})
             if not (getattr(obj, "Name", None) or getattr(obj, "LongName", None) or getattr(obj, "Tag", None)):
                 result.tables["model_scan_warnings"].append(self._warning(project_id, file_id, oid, "SPACE_MISSING_NAME", "Space missing name", "Space has no name or number"))
         for zone in _safe_by_type(model, "IfcZone") + _safe_by_type(model, "IfcSpatialZone"):
