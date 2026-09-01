@@ -333,6 +333,10 @@ class Regulation38AdminAuth(FakeSupabaseAuth):
     list_fails = False
     projects = []
 
+    def __init__(self):
+        super().__init__()
+        self.created_project_data = None
+
     def _request_json(self, method, url, **kwargs):
         if url.endswith("/rpc/can_create_project"):
             return True
@@ -342,6 +346,9 @@ class Regulation38AdminAuth(FakeSupabaseAuth):
             return self.projects
         if url.endswith("/rpc/reg38_schema_health"):
             return {"valid": False, "missing": ["projects.building_name"]}
+        if url.endswith("/rpc/create_reg38_project"):
+            self.created_project_data = kwargs["json"]["project_data"]
+            return "00000000-0000-4000-8000-000000000038"
         raise AssertionError(url)
 
 
@@ -376,6 +383,21 @@ def test_admin_zero_projects_has_create_cta_and_direct_wizard_is_independent(mon
     direct = request("GET", "/app/regulation-38/projects/new", headers={"cookie": cookie})
     assert direct.status_code == 200
     assert "Project Scope" in direct.text
+
+
+def test_application_new_project_post_calls_rpc_and_redirects_to_scope(monkeypatch):
+    fake = Regulation38AdminAuth()
+    cookie = _admin_cookie(monkeypatch, fake)
+    body = urlencode({"name": "FireTrace House", "project_reference": "FT-038"}).encode()
+    response = request("POST", "/app/projects/new", body=body, headers={
+        "cookie": cookie, "content-type": "application/x-www-form-urlencoded",
+    })
+    assert response.status_code == 303
+    assert response.header("location") == (
+        "/app/regulation-38/projects/00000000-0000-4000-8000-000000000038/setup/scope"
+    )
+    assert fake.created_project_data["name"] == "FireTrace House"
+    assert fake.created_project_data["project_reference"] == "FT-038"
 
 
 def test_member_cannot_see_create_or_open_direct_wizard(monkeypatch):

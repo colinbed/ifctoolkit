@@ -319,12 +319,14 @@ def test_model_scan_missing_project_is_the_only_repository_404():
     assert caught.value.status_code == 404 and caught.value.public_message == "Project not found."
 
 
-def _render_model_scan(status, warnings=None):
+def _render_model_scan(status, warnings=None, spaces=1, acknowledged=False):
     return saas.templates.env.get_template("saas/reg38_model_scan.html").render(
         project_id="project-id",
+        project={"spatial_ifc_unavailable": acknowledged},
+        wizard_routes={n: saas.wizard_url("project-id", n) for n in range(1, 10)},
         model_scan={
-            "file": {"id": "model-id"},
-            "job": ({"status": status, "statistics": {}} if status else None),
+            "file": {"id": "model-id", "storage_path": "projects/project-id/models/model-id/original/model.ifc"},
+            "job": ({"status": status, "statistics": {"spaces": spaces}} if status else None),
             "warnings": warnings or [],
         },
     )
@@ -334,7 +336,19 @@ def test_completed_model_scan_shows_continue_to_step_five():
     html = _render_model_scan("COMPLETED")
     assert ">Continue</a>" in html
     assert 'href="/app/regulation-38/projects/project-id/setup/spaces-zones"' in html
-    assert 'href="?step=3">Back</a>' in html
+    assert 'href="/app/regulation-38/projects/project-id/setup/upload-ifc">Back</a>' in html
+
+
+def test_completed_zero_space_scan_requires_explicit_choice():
+    html = _render_model_scan("COMPLETED", spaces=0)
+    assert "No IFC spaces detected" in html
+    assert "Continue without spatial data" in html and "Replace IFC" in html
+    assert ">Continue</a>" not in html
+
+
+def test_acknowledged_zero_space_scan_can_continue():
+    html = _render_model_scan("COMPLETED", spaces=0, acknowledged=True)
+    assert ">Continue</a>" in html and "No IFC spaces detected" not in html
 
 
 def test_running_model_scan_hides_continue():
@@ -353,8 +367,8 @@ def test_completed_model_scan_warnings_are_collapsed_by_default():
         for _ in range(2309)
     ])
     assert "2309 warnings" in html
-    assert "<details>" in html and "Review all 2309 warnings" in html
-    assert "<details open" not in html
+    assert "Review findings" in html
+    assert html.count("Custom fire property match") == 0
 
 
 def test_step_five_named_setup_route_dispatches_to_spatial_review(monkeypatch):
@@ -372,10 +386,33 @@ def test_every_wizard_step_has_a_forward_action():
     spatial = open("templates/saas/reg38_spatial_review.html", encoding="utf-8").read()
     assert "Save & Next" in template  # Steps 1 and 2.
     assert "Next: Model Scan" in template  # Step 3.
-    assert ">Continue</a>" in scan and "/setup/spaces-zones" in scan  # Step 4.
-    assert 'href="?step=6">Save & Next</a>' in spatial  # Step 5.
-    assert '{% if step < 9 %}<a class="button" href="?step={{ step+1 }}">Next</a>' in template  # Steps 6-8.
+    assert ">Continue</a>" in scan and "wizard_routes[5]" in scan  # Step 4.
+    assert 'href="{{ wizard_routes[6] }}">Save & Next</a>' in spatial  # Step 5.
+    assert 'href="{{ wizard_routes[step+1] }}">Next</a>' in template  # Steps 6-8.
     assert 'href="/app/projects">Return to projects</a>' in template  # Step 9.
+
+
+def test_all_adjacent_wizard_routes_are_canonical():
+    expected = ("details", "scope", "upload-ifc", "model-scan", "spaces-zones",
+                "fire-construction", "plans", "information-requirements", "summary")
+    for step, slug in enumerate(expected, 1):
+        assert saas.wizard_url("project-id", step).endswith(f"/setup/{slug}")
+    assert "wizard_routes[4]" in open("templates/saas/reg38_spatial_review.html", encoding="utf-8").read()
+
+
+def test_lifecycle_migration_is_transactional_and_preserves_manual_configuration():
+    sql = open("supabase/migrations/202609010001_reg38_ifc_lifecycle.sql", encoding="utf-8").read().lower()
+    assert "remove_reg38_ifc_model" in sql and "delete from public.ifc_files" in sql
+    assert "source_kind <> 'manual'" in sql and "source_type <> 'manual'" in sql
+    assert "spatial_ifc_acknowledged_at" in sql and "reg38_project_audit_events" in sql
+    assert "project_status='draft'" in sql
+
+
+def test_existing_model_card_has_complete_lifecycle_controls():
+    template = open("templates/saas/reg38_wizard.html", encoding="utf-8").read()
+    for label in ("View Scan", "Replace IFC", "Remove IFC", "Retry Scan"):
+        assert label in template
+    assert "ifc_schema" in template and "job.statistics.get('spaces',0)" in template
 
 
 def test_model_scan_unauthorized_project_access_is_403():

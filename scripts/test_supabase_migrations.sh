@@ -40,6 +40,8 @@ apply_all() {
 
 bootstrap "${DB_PREFIX}_fresh"
 apply_all "${DB_PREFIX}_fresh"
+psql -v ON_ERROR_STOP=1 -d "${DB_PREFIX}_fresh" \
+  -f "$ROOT/tests/sql/assert_reg38_project_creation.sql" >/dev/null
 
 # Reproduce the production failure against PostgreSQL itself. Two input rows hit
 # the same conflict identity in one command, so PostgreSQL must reject the batch

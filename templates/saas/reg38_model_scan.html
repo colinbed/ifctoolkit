@@ -27,15 +27,17 @@
       <div class="scan-warnings">
         <h4>Model scan warnings</h4>
         <p><strong>{{ model_scan.warnings|length }} warning{% if model_scan.warnings|length != 1 %}s{% endif %}</strong> found. Warnings are collapsed to keep this summary manageable.</p>
-        <details>
-          <summary>Review all {{ model_scan.warnings|length }} warnings</summary>
-          <ul>{% for warning in model_scan.warnings %}<li><strong>{{ warning.title }}</strong>{% if warning.description %} — {{ warning.description }}{% endif %}</li>{% endfor %}</ul>
-        </details>
+        <a class="button ghost" href="{{ wizard_routes[6] }}">Review findings</a>
       </div>
     {% endif %}
+    {% if stats.get('spaces', 0)|int == 0 and not project.spatial_ifc_unavailable %}<div class="spatial-warning" role="alert"><h4>No IFC spaces detected</h4><p>This model contains no IfcSpace spatial data. Room and spatial Regulation 38 review cannot be completed from this IFC.</p><p><strong>Continuing means spatial review will be unavailable for this project.</strong></p></div>{% endif %}
   {% endif %}
 </section>
 <div class="wizard-actions">
-  <a class="button ghost" href="?step=3">Back</a>
-  {% if job and job.status == 'COMPLETED' %}<a class="button" href="/app/regulation-38/projects/{{ project_id }}/setup/spaces-zones">Continue</a>{% endif %}
+  <a class="button ghost" href="{{ wizard_routes[3] }}">Back</a>
+  {% if job and job.status == 'COMPLETED' %}
+    {% if stats.get('spaces', 0)|int == 0 and not project.spatial_ifc_unavailable %}<div><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/remove" onsubmit="return confirm('Replace this IFC? All extracted data from the current model will be removed.')"><input type="hidden" name="storage_path" value="{{ model_scan.file.storage_path }}"><button class="button">Replace IFC</button></form><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/spatial-acknowledgement"><button class="button ghost">Continue without spatial data</button></form></div>
+    {% else %}<a class="button" href="{{ wizard_routes[5] }}">Continue</a>{% endif %}
+  {% endif %}
+  {% if model_scan.file %}<div><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/remove" onsubmit="return confirm('Replace this IFC? All extracted data from the current model will be removed.')"><input type="hidden" name="storage_path" value="{{ model_scan.file.storage_path }}"><button class="link">Replace IFC</button></form><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/remove" onsubmit="return confirm('Remove this IFC and its extracted data?')"><input type="hidden" name="storage_path" value="{{ model_scan.file.storage_path }}"><button class="link danger">Remove IFC</button></form></div>{% endif %}
 </div>
