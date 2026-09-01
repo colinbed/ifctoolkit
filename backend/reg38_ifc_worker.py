@@ -102,6 +102,29 @@ class SupabaseBatchSink:
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}
         for table in order:
             rows = tables.get(table, [])
+            # Deterministic IDs make a re-scan an update. Preserve explicitly
+            # curated working fields while refreshing IFC-derived columns.
+            if table == "project_spaces" and rows:
+                ids = ",".join(str(row["id"]) for row in rows)
+                existing = self._request("GET", "rest/v1/project_spaces?"
+                    f"id=in.({ids})&select=id,name,description,occupancy_type,occupancy_capacity,high_risk,"
+                    "included_in_reg38,working_geometry") or []
+                working = {str(row["id"]): row for row in existing}
+                curated = ("name", "description", "occupancy_type", "occupancy_capacity",
+                           "high_risk", "included_in_reg38", "working_geometry")
+                for row in rows:
+                    previous = working.get(str(row["id"]))
+                    if previous:
+                        row.update({key: previous.get(key) for key in curated})
+            elif table == "model_scan_warnings" and rows:
+                ids = ",".join(str(row["id"]) for row in rows)
+                existing = self._request("GET", "rest/v1/model_scan_warnings?"
+                    f"id=in.({ids})&select=id,review_status,reviewed_by,reviewed_at") or []
+                reviews = {str(row["id"]): row for row in existing}
+                for row in rows:
+                    if str(row["id"]) in reviews:
+                        row.update({key: reviews[str(row["id"])].get(key)
+                                    for key in ("review_status", "reviewed_by", "reviewed_at")})
             _log("phase", phase=f"WRITE_{table.upper()}", rows=len(rows))
             for offset in range(0, len(rows), self.batch_size):
                 batch = rows[offset:offset + self.batch_size]

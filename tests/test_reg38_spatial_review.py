@@ -104,6 +104,18 @@ def test_storey_plan_reports_explicit_missing_geometry_state():
     assert Regulation38Repository(EmptyPlanAuth()).spatial_storey_plan("token", PROJECT, "storey")["geometry_status"] == "unavailable"
 
 
+@pytest.mark.parametrize("geometry", [None, {"type": "Polygon", "coordinates": None},
+                                       {"type": "Centroid", "coordinates": [1, 2]},
+                                       {"type": "Polygon", "coordinates": [], "reason": "BACKFILL_REQUIRED"}])
+def test_spatial_review_marks_all_missing_geometry_shapes_for_backfill(geometry):
+    class MissingGeometryAuth(SpatialAuth):
+        def _request_json(self, method, url, **kwargs):
+            if "project_spaces?" in url:
+                return [{"id": SPACE_1, "source_geometry": geometry}]
+            return super()._request_json(method, url, **kwargs)
+    assert Regulation38Repository(MissingGeometryAuth()).spatial_review("token", PROJECT)["geometry_backfill_required"]
+
+
 def test_storey_plan_denies_non_member_before_geometry_query():
     auth = SpatialAuth(role=None)
     with pytest.raises(SupabaseAuthError) as exc:
@@ -119,4 +131,5 @@ def test_spatial_template_has_fixed_workspace_panes_and_preview_states():
     for pane in ('class="structure-panel"', 'class="plan-panel"', 'class="details-panel"'):
         assert pane in template
     assert "Preview unavailable" in script and "selected" in script
+    assert "Re-run Model Scan" in template and "refresh derived spatial and fire-safety data" in template
     assert "height:clamp(550px,calc(100vh - 330px),720px)" in css and "overflow-y:auto" in css

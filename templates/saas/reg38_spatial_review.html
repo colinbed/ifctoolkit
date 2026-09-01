@@ -4,6 +4,7 @@
   <label class="toggle"><input id="grid-toggle" type="checkbox" checked> Grid</label>
   {% if spatial.can_admin %}<button class="button small" id="new-zone" type="button">+ Manual zone</button>{% endif %}
 </div>
+{% if spatial.geometry_backfill_required %}<div class="spatial-warning" role="alert"><h4>Preview unavailable</h4><p>Plan geometry has not been generated for one or more spaces.</p><p>This will re-process the current design model and refresh derived spatial and fire-safety data.</p>{% if spatial.can_admin and progress.model and progress.job and progress.job.status in ['COMPLETED','SUCCEEDED'] %}<form method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ progress.model.id }}/rerun" onsubmit="return confirm('Re-run Model Scan?\n\nThis will re-process the existing design model and refresh IFC-derived data. Your manually entered FireTrace working data will be retained.')"><button class="button">Re-run Model Scan</button></form>{% else %}<a class="button" href="{{ wizard_routes[4] }}">View Model Scan</a>{% endif %}</div>{% endif %}
 {% if not spatial.can_admin %}<p class="notice">You can review this spatial information. Only a project owner or administrator can make changes.</p>{% endif %}
 <div class="spatial-review" id="spatial-review">
   <aside class="structure-panel"><div class="pane-heading"><strong>MODEL STRUCTURE</strong></div><nav id="structure-tree" aria-label="Model structure"></nav></aside>

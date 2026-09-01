@@ -3,6 +3,7 @@
   <h3>Regulation 38 Model Scan</h3>
   {% if not job %}<p>No uploaded IFC is ready to scan.</p>
   {% elif job.status in ['QUEUED','RUNNING'] %}
+    <p class="notice">Model data is being processed or refreshed.</p>
     <p><strong>{% if job.status == 'QUEUED' %}Waiting for processing worker{% else %}Processing IFC...{% endif %}</strong></p>
     <div class="upload-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ job.progress_percent }}"><i style="width:{{ job.progress_percent }}%"></i></div>
     <p>{{ job.progress_percent }}% · Current step: {{ (job.current_step or 'QUEUED')|replace('_',' ')|title }}</p>
@@ -39,5 +40,6 @@
     {% if stats.get('spaces', 0)|int == 0 and not project.spatial_ifc_unavailable %}<div><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/remove" onsubmit="return confirm('Replace this IFC? All extracted data from the current model will be removed.')"><input type="hidden" name="storage_path" value="{{ model_scan.file.storage_path }}"><button class="button">Replace IFC</button></form><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/spatial-acknowledgement"><button class="button ghost">Continue without spatial data</button></form></div>
     {% else %}<a class="button" href="{{ wizard_routes[5] }}">Continue</a>{% endif %}
   {% endif %}
+  {% if job and job.status in ['COMPLETED','SUCCEEDED'] %}<form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/rerun" onsubmit="return confirm('Re-run Model Scan?\n\nThis will re-process the existing design model and refresh IFC-derived data. Your manually entered FireTrace working data will be retained.')"><button class="button ghost">Re-run Model Scan</button></form>{% endif %}
   {% if model_scan.file %}<div><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/remove" onsubmit="return confirm('Replace this IFC? All extracted data from the current model will be removed.')"><input type="hidden" name="storage_path" value="{{ model_scan.file.storage_path }}"><button class="link">Replace IFC</button></form><form class="inline-form" method="post" action="/app/projects/{{ project_id }}/regulation-38/ifc/{{ model_scan.file.id }}/remove" onsubmit="return confirm('Remove this IFC and its extracted data?')"><input type="hidden" name="storage_path" value="{{ model_scan.file.storage_path }}"><button class="link danger">Remove IFC</button></form></div>{% endif %}
 </div>

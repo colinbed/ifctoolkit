@@ -382,6 +382,8 @@ def _render_model_scan(status, warnings=None, spaces=1, acknowledged=False):
 def test_completed_model_scan_shows_continue_to_step_five():
     html = _render_model_scan("COMPLETED")
     assert ">Continue</a>" in html
+    assert ">Re-run Model Scan</button>" in html and "/model-id/rerun" in html
+    assert "manually entered FireTrace working data will be retained" in html
     assert 'href="/app/firetrace/projects/project-id/setup/spatial"' in html
     assert 'href="/app/firetrace/projects/project-id/setup/model">Back</a>' in html
 
@@ -399,13 +401,50 @@ def test_acknowledged_zero_space_scan_can_continue():
 
 
 def test_running_model_scan_hides_continue():
-    assert ">Continue</a>" not in _render_model_scan("RUNNING")
+    html = _render_model_scan("RUNNING")
+    assert ">Continue</a>" not in html and "Re-run Model Scan</button>" not in html
 
 
 def test_failed_model_scan_shows_retry_and_hides_continue():
     html = _render_model_scan("FAILED")
     assert ">Retry Scan</button>" in html
     assert ">Continue</a>" not in html
+
+
+def test_rerun_uses_current_file_and_creates_a_new_authoritative_job(caplog):
+    class RerunAuth(ModelScanAuth):
+        def _request_json(self, method, url, **kwargs):
+            if "rpc/rerun_reg38_ifc_job" in url:
+                self.calls.append((method, url, kwargs))
+                return "new-job-id"
+            if "project_members?" in url and "select=role" in url:
+                self.calls.append((method, url, kwargs))
+                return [{"role": "ADMIN"}]
+            return super()._request_json(method, url, **kwargs)
+    auth = RerunAuth()
+    with caplog.at_level("INFO"):
+        result = Regulation38Repository(auth).rerun_model_scan(
+            "token", "project-id", "model-id", "auth-user-id")
+    assert result == "new-job-id"
+    rpc = next(call for call in auth.calls if "rerun_reg38_ifc_job" in call[1])
+    assert rpc[2]["json"] == {"target_file": "model-id"}
+    assert "previous_job_id=job-id" in caplog.text and "new_job_id=new-job-id" in caplog.text
+
+
+def test_rerun_permission_uses_existing_project_admin_check():
+    auth = ModelScanAuth()
+    auth.member = False
+    with pytest.raises(module.SupabaseAuthError) as caught:
+        Regulation38Repository(auth).rerun_model_scan("token", "project-id", "model-id", "user")
+    assert caught.value.status_code == 403
+
+
+def test_rerun_migration_keeps_history_file_and_storage_and_queues_new_job():
+    sql = open("supabase/migrations/202609010003_reg38_ifc_rerun.sql", encoding="utf-8").read().lower()
+    assert "order by created_at desc, id desc" in sql
+    assert "insert into public.ifc_processing_jobs" in sql and "'queued','queued',0" in sql
+    assert "update public.ifc_processing_jobs" not in sql and "delete from public.ifc_processing_jobs" not in sql
+    assert "delete from public.ifc_files" not in sql and "storage_path" in sql
 
 
 def test_completed_model_scan_warnings_are_collapsed_by_default():
