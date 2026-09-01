@@ -139,29 +139,108 @@ def _centroid(obj: Any) -> dict[str, float] | None:
     return None
 
 
-def _space_footprint(obj: Any) -> list[list[float]] | None:
-    """Create a lightweight XY hull once during Model Scan."""
+def _representation_types(obj: Any) -> list[str]:
+    """Return useful representation entities, including nested mapped items."""
+    found: set[str] = set()
+    seen: set[int] = set()
+
+    def visit(value: Any) -> None:
+        if value is None or not hasattr(value, "is_a") or value.id() in seen:
+            return
+        seen.add(value.id())
+        kind = value.is_a()
+        if kind not in {"IfcProductDefinitionShape", "IfcShapeRepresentation", "IfcRepresentationMap"}:
+            found.add(kind)
+        for attribute in ("Representations", "Items", "MappingSource", "MappedRepresentation"):
+            child = getattr(value, attribute, None)
+            for item in child if isinstance(child, (tuple, list)) else (child,):
+                visit(item)
+
+    visit(getattr(obj, "Representation", None))
+    return sorted(found)
+
+
+def _polygon_centroid(ring: list[list[float]]) -> tuple[float, float] | None:
+    area2 = cx = cy = 0.0
+    for a, b in zip(ring, ring[1:]):
+        cross = a[0] * b[1] - b[0] * a[1]
+        area2 += cross; cx += (a[0] + b[0]) * cross; cy += (a[1] + b[1]) * cross
+    if abs(area2) < 1e-12:
+        return None
+    return cx / (3 * area2), cy / (3 * area2)
+
+
+def _space_geometry(obj: Any, storey: Any) -> dict[str, Any]:
+    """Tessellate a space and derive its lowest horizontal closed mesh boundary.
+
+    Geometry is requested in IFC project units so placement matrices and vertices
+    have the same scale.  The world-space mesh is normalised by the storey origin;
+    this keeps previews numerically stable while retaining a reversible offset.
+    """
+    representations = _representation_types(obj)
+    if not getattr(obj, "Representation", None):
+        return {"type": "Unavailable", "reason": "NO_REPRESENTATION", "representation_types": []}
     try:
         settings = ifcopenshell.geom.settings()
         settings.set(settings.USE_WORLD_COORDS, True)
-        vertices = list(ifcopenshell.geom.create_shape(settings, obj).geometry.verts)
-        points = sorted({(round(float(vertices[i]), 5), round(float(vertices[i + 1]), 5))
-                         for i in range(0, len(vertices), 3)})
-        if len(points) < 3:
-            return None
-        cross = lambda o, a, b: (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-        lower: list[tuple[float, float]] = []
-        for point in points:
-            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0: lower.pop()
-            lower.append(point)
-        upper: list[tuple[float, float]] = []
-        for point in reversed(points):
-            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0: upper.pop()
-            upper.append(point)
-        hull = lower[:-1] + upper[:-1]
-        return [[x, y] for x, y in hull] + [[hull[0][0], hull[0][1]]] if len(hull) >= 3 else None
-    except Exception:
-        return None
+        if hasattr(settings, "CONVERT_BACK_UNITS"):
+            settings.set(settings.CONVERT_BACK_UNITS, True)
+        # Keep the shape wrapper alive while reading its tuple-backed buffers.
+        # Taking ``create_shape(...).geometry`` directly can leave verts/faces
+        # pointing at released native memory (the production centroid-only bug).
+        shape = ifcopenshell.geom.create_shape(settings, obj)
+        mesh = shape.geometry
+        vertices = [(float(mesh.verts[i]), float(mesh.verts[i + 1]), float(mesh.verts[i + 2]))
+                    for i in range(0, len(mesh.verts), 3)]
+        faces = list(mesh.faces)
+    except Exception as exc:
+        return {"type": "Unavailable", "reason": "GEOMETRY_ENGINE_FAILURE",
+                "detail": type(exc).__name__, "representation_types": representations}
+    if len(vertices) < 3 or len(faces) < 3:
+        return {"type": "Unavailable", "reason": "NO_CLOSED_BOUNDARY", "representation_types": representations}
+
+    z_min = min(v[2] for v in vertices)
+    z_span = max(v[2] for v in vertices) - z_min
+    tolerance = max(1e-7, z_span * 1e-6)
+    edge_counts: dict[tuple[int, int], int] = {}
+    for i in range(0, len(faces), 3):
+        tri = faces[i:i + 3]
+        if len(tri) == 3 and all(abs(vertices[index][2] - z_min) <= tolerance for index in tri):
+            for a, b in zip(tri, (tri[1], tri[2], tri[0])):
+                edge = tuple(sorted((int(a), int(b))))
+                edge_counts[edge] = edge_counts.get(edge, 0) + 1
+    boundary = [edge for edge, count in edge_counts.items() if count == 1]
+    adjacency: dict[int, list[int]] = {}
+    for a, b in boundary:
+        adjacency.setdefault(a, []).append(b); adjacency.setdefault(b, []).append(a)
+    loops: list[list[int]] = []
+    unused = set(boundary)
+    while unused:
+        first = unused.pop(); loop = [first[0], first[1]]
+        while loop[-1] != loop[0]:
+            candidates = [n for n in adjacency.get(loop[-1], []) if tuple(sorted((loop[-1], n))) in unused]
+            if not candidates: break
+            nxt = candidates[0]; unused.remove(tuple(sorted((loop[-1], nxt)))); loop.append(nxt)
+        if len(loop) >= 4 and loop[-1] == loop[0]: loops.append(loop)
+    if not loops:
+        return {"type": "Unavailable", "reason": "NO_CLOSED_BOUNDARY", "representation_types": representations}
+
+    offset = _centroid(storey) or {"x": 0.0, "y": 0.0, "z": 0.0}
+    rings = [[[round(vertices[index][0] - offset["x"], 6), round(vertices[index][1] - offset["y"], 6)]
+              for index in loop] for loop in loops]
+    ring = max(rings, key=lambda candidate: abs(_signed_area(candidate)))
+    centroid = _polygon_centroid(ring)
+    if centroid is None:
+        return {"type": "Unavailable", "reason": "INVALID_POLYGON", "representation_types": representations}
+    return {"type": "Polygon", "coordinates": ring,
+            "centroid": {"x": centroid[0], "y": centroid[1], "z": z_min - offset["z"]},
+            "coordinate_system": "storey-local", "world_offset": offset,
+            "extraction_method": "IFCOPENSHELL_LOWEST_HORIZONTAL_MESH_BOUNDARY",
+            "representation_types": representations}
+
+
+def _signed_area(ring: list[list[float]]) -> float:
+    return sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(ring, ring[1:])) / 2
 
 
 def _flatten_psets(obj: Any, scope: str) -> list[dict[str, Any]]:
@@ -307,7 +386,8 @@ class Regulation38IfcProcessor:
                         if name in values: return _value(values[name])
                 return None
             sid = _id(file_id, "space", obj.GlobalId); space_ids[obj.GlobalId] = sid
-            c = _centroid(obj) or {}
+            geometry = _space_geometry(obj, storey)
+            c = geometry.get("centroid") or _centroid(obj) or {}
             result.tables["project_spaces"].append({"id": sid, "project_id": project_id, "building_id": building_ids[building.GlobalId],
                 "storey_id": storey_ids[storey.GlobalId], "source_ifc_object_id": oid, "ifc_global_id": obj.GlobalId,
                 "source_kind": "IFC_SPACE", "space_number": getattr(obj, "Tag", None), "name": getattr(obj, "Name", None) or "Unnamed space",
@@ -315,8 +395,7 @@ class Regulation38IfcProcessor:
                 "gross_area": quantity(("GrossFloorArea",)), "net_area": quantity(("NetFloorArea",)),
                 "height": quantity(("Height", "FinishCeilingHeight", "GrossHeight")), "volume": quantity(("GrossVolume", "NetVolume")),
                 "centroid_x": c.get("x"), "centroid_y": c.get("y"), "centroid_z": c.get("z"),
-                "source_geometry": {"type": "Polygon", "coordinates": _space_footprint(obj), "centroid": c,
-                                    "coordinate_system": "world"}})
+                "source_geometry": geometry})
             if not (getattr(obj, "Name", None) or getattr(obj, "LongName", None) or getattr(obj, "Tag", None)):
                 result.tables["model_scan_warnings"].append(self._warning(project_id, file_id, oid, "SPACE_MISSING_NAME", "Space missing name", "Space has no name or number"))
         for zone in _safe_by_type(model, "IfcZone") + _safe_by_type(model, "IfcSpatialZone"):
@@ -419,6 +498,12 @@ class Regulation38IfcProcessor:
         objects = result.tables["ifc_objects"]; fires = result.tables["fire_requirements"]
         fire_objects = {r["ifc_object_id"] for r in fires}
         count = lambda kind: sum(o["ifc_entity"] == kind for o in objects)
+        space_geometries = [row.get("source_geometry") or {} for row in result.tables["project_spaces"]]
+        geometry_failures: dict[str, int] = {}
+        for geometry in space_geometries:
+            if geometry.get("type") != "Polygon":
+                reason = geometry.get("reason", "UNSUPPORTED_REPRESENTATION")
+                geometry_failures[reason] = geometry_failures.get(reason, 0) + 1
         result.statistics.update({"buildings": count("IfcBuilding"), "storeys": count("IfcBuildingStorey"),
             "spaces": count("IfcSpace"), "ifc_zones": count("IfcZone"), "ifc_spatial_zones": count("IfcSpatialZone"),
             "fire_safety_spatial_zones": sum(o["ifc_entity"] == "IfcSpatialZone" and (o.get("predefined_type") or "").upper() == "FIRESAFETY" for o in objects),
@@ -428,4 +513,7 @@ class Regulation38IfcProcessor:
             "custom_property_only_fire_findings": sum(w["warning_code"] == "FIRE_RATING_CUSTOM_PROPERTY" for w in result.tables["model_scan_warnings"]),
             "conflict_count": sum(w["warning_code"] == "FIRE_RATING_CONFLICT" for w in result.tables["model_scan_warnings"]),
             "unnamed_spaces": sum(w["warning_code"] == "SPACE_MISSING_NAME" for w in result.tables["model_scan_warnings"]),
-            "objects_total": len(objects), "properties_total": len(result.tables["ifc_object_properties"])})
+            "objects_total": len(objects), "properties_total": len(result.tables["ifc_object_properties"]),
+            "spaces_with_plan_geometry": sum(g.get("type") == "Polygon" and bool(g.get("coordinates")) for g in space_geometries),
+            "spaces_without_plan_geometry": sum(g.get("type") != "Polygon" for g in space_geometries),
+            "spaces_centroid_only": 0, "space_geometry_failure_reasons": geometry_failures})

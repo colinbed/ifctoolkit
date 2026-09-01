@@ -18,7 +18,7 @@
     if (!source(space).name && !source(space).long_name && !space.space_number) warnings.push("Unnamed space");
     const dupName = Object.values(spaces).filter((x) => x.id !== space.id && ((space.name && x.name === space.name) || (space.space_number && x.space_number === space.space_number)));
     if (dupName.length) warnings.push("Duplicate name or number");
-    if (!space.source_geometry || !(space.source_geometry.coordinates || space.source_geometry.footprint || space.source_geometry.centroid)) warnings.push("Missing geometry");
+    if (space.source_geometry?.type !== "Polygon" || !space.source_geometry.coordinates?.length) warnings.push("Missing geometry");
     if (fireZones.length && !spaceZoneIds(space.id).some((id) => zones[id]?.zone_type === "FIRE_COMPARTMENT")) warnings.push("Not assigned to a fire compartment");
     return warnings;
   };
@@ -60,6 +60,13 @@
     tree.querySelectorAll("[data-storey]").forEach((el) => el.onclick = () => { selectedStorey = el.dataset.storey; selectedSpace = null; loadPlan(); });
   }
   const geometry = (space) => space.source_geometry?.coordinates || space.source_geometry?.footprint;
+  const emptyMessage = () => {
+    const unavailable = selectedSpace && spaces[selectedSpace]?.source_geometry;
+    const reason = unavailable?.reason;
+    if (reason === "NO_REPRESENTATION") return "This space has no geometric representation in the source IFC.";
+    if (reason) return "Space detected, but FireTrace could not derive a closed plan footprint from its IFC geometry.";
+    return "Plan geometry has not been generated. Re-run Model Scan to backfill this space.";
+  };
   function bounds(rows) {
     const pts = rows.flatMap((row) => geometry(row) || []);
     if (!pts.length) return null;
@@ -76,7 +83,7 @@
     svg.innerHTML = "";
     if (!planRows.some((row) => geometry(row))) {
       svg.setAttribute("viewBox", "0 0 800 560");
-      svg.innerHTML = '<g class="preview-empty"><text x="400" y="260" text-anchor="middle" font-weight="700">Preview unavailable</text><text x="400" y="290" text-anchor="middle">No stored plan geometry is available for this space.</text><text x="400" y="315" text-anchor="middle">The IFC did not provide a footprint or Model Scan could not generate one.</text></g>';
+      svg.innerHTML = `<g class="preview-empty"><text x="400" y="260" text-anchor="middle" font-weight="700">Preview unavailable</text><text x="400" y="290" text-anchor="middle">${esc(emptyMessage())}</text></g>`;
       return;
     }
     planRows.forEach((space) => {

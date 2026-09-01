@@ -15,6 +15,15 @@ def make_fixture(path: Path):
     ifcopenshell.api.run("aggregate.assign_object", model, products=[storey], relating_object=building)
     space = create("IfcSpace", "Room 101")
     ifcopenshell.api.run("aggregate.assign_object", model, products=[space], relating_object=storey)
+    ifcopenshell.api.run("unit.assign_unit", model)
+    model_context = ifcopenshell.api.run("context.add_context", model, context_type="Model")
+    body = ifcopenshell.api.run("context.add_context", model, context_type="Model",
+                                context_identifier="Body", target_view="MODEL_VIEW", parent=model_context)
+    profile = ifcopenshell.api.run("profile.add_arbitrary_profile", model,
+                                   profile=[(0.0, 0.0), (5.2, 0.0), (5.2, 4.1), (2.0, 3.2), (0.0, 4.1)])
+    representation = ifcopenshell.api.run("geometry.add_profile_representation", model, context=body,
+                                           profile=profile, depth=3.0)
+    ifcopenshell.api.run("geometry.assign_representation", model, product=space, representation=representation)
     quantities = ifcopenshell.api.run("pset.add_qto", model, product=space, name="Qto_SpaceBaseQuantities")
     ifcopenshell.api.run("pset.edit_qto", model, qto=quantities, properties={"GrossFloorArea": 42.5, "NetFloorArea": 40.0, "Height": 3.0})
     zone = create("IfcZone", "Occupancy zone")
@@ -47,6 +56,13 @@ def test_space_zone_spatial_zone_grid_and_properties(tmp_path):
     space = result.tables["project_spaces"][0]
     assert space["ifc_global_id"] == ids["space"]
     assert (space["gross_area"], space["net_area"], space["height"]) == (42.5, 40.0, 3.0)
+    geometry = space["source_geometry"]
+    assert geometry["type"] == "Polygon"
+    assert len(geometry["coordinates"]) >= 4
+    assert geometry["coordinates"][0] == geometry["coordinates"][-1]
+    assert geometry["centroid"] == {"x": geometry["centroid"]["x"], "y": geometry["centroid"]["y"], "z": 0.0}
+    assert geometry["coordinate_system"] == "storey-local"
+    assert "IfcExtrudedAreaSolid" in geometry["representation_types"]
     zones = {row["ifc_global_id"]: row for row in result.tables["project_zones"]}
     assert zones[ids["zone"]]["zone_type"] == "USER_DEFINED"
     assert zones[ids["spatial_zone"]]["zone_type"] == "FIRE_COMPARTMENT"
@@ -65,6 +81,8 @@ def test_standard_and_custom_fire_discovery_and_statistics(tmp_path):
     assert any(r["source_type"] == "STANDARD_IFC_PROPERTY" and r["required_minutes"] == 60 and r["smoke_indication"] for r in findings)
     assert any(r["source_type"] == "KNOWN_CUSTOM_PROPERTY" and r["required_minutes"] == 60 for r in findings)
     assert result.statistics["spaces"] == 1
+    assert result.statistics["spaces_with_plan_geometry"] == 1
+    assert result.statistics["spaces_without_plan_geometry"] == 0
     assert result.statistics["ifc_zones"] == 1
     assert result.statistics["fire_safety_spatial_zones"] == 1
     assert result.statistics["grid_axes"] == 1
@@ -98,6 +116,19 @@ def test_identical_logical_fire_findings_are_deduplicated():
             "property_name": "Fire Rating", "property_value_text": "EI60"}
     Regulation38IfcProcessor()._fire(result, "project", "file", {"object": [prop, dict(prop)]})
     assert len(result.tables["fire_requirements"]) == 1
+
+
+def test_space_without_representation_is_explicitly_unavailable(tmp_path):
+    path = tmp_path / "no-geometry.ifc"
+    make_fixture(path)
+    model = ifcopenshell.open(str(path))
+    model.by_type("IfcSpace")[0].Representation = None
+    model.write(str(path))
+    result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
+    geometry = result.tables["project_spaces"][0]["source_geometry"]
+    assert geometry == {"type": "Unavailable", "reason": "NO_REPRESENTATION", "representation_types": []}
+    assert result.statistics["spaces_without_plan_geometry"] == 1
+    assert result.statistics["space_geometry_failure_reasons"] == {"NO_REPRESENTATION": 1}
 
 
 def test_rating_parser_accepts_safe_forms_and_rejects_missing_or_ambiguous():
