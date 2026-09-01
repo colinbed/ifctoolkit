@@ -490,6 +490,9 @@ def test_lifecycle_migration_is_transactional_and_preserves_manual_configuration
     assert "source_kind <> 'manual'" in sql and "source_type <> 'manual'" in sql
     assert "spatial_ifc_acknowledged_at" in sql and "reg38_project_audit_events" in sql
     assert "project_status='draft'" in sql
+    assert sql.count("create policy") == 1
+    assert "from pg_policies" in sql
+    assert "policyname = 'reg38_audit_select'" in sql
 
 
 def test_existing_model_card_has_complete_lifecycle_controls():

@@ -15,8 +15,22 @@ create table if not exists public.reg38_project_audit_events (
   created_at timestamptz not null default now()
 );
 alter table public.reg38_project_audit_events enable row level security;
-create policy reg38_audit_select on public.reg38_project_audit_events for select to authenticated
-  using (public.is_project_member(project_id));
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'reg38_project_audit_events'
+      and policyname = 'reg38_audit_select'
+  ) then
+    create policy reg38_audit_select
+      on public.reg38_project_audit_events
+      for select
+      to authenticated
+      using (public.is_project_member(project_id));
+  end if;
+end $$;
 
 create or replace function public.acknowledge_reg38_missing_spatial_data(target_project uuid, target_user uuid)
 returns void language plpgsql security definer set search_path=public as $$
