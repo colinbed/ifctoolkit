@@ -4,8 +4,54 @@ import pytest
 
 import ifc_app.reg38_projects as module
 import ifc_app.saas as saas
-from ifc_app.firetrace_wizard import FIRETRACE_WIZARD_STEPS, firetrace_wizard_url
+from ifc_app.firetrace_wizard import FIRETRACE_WIZARD_STEPS, firetrace_wizard_url, get_firetrace_resume_step
 from ifc_app.reg38_projects import ProjectCreate, Regulation38Repository, validate_ifc
+
+
+@pytest.mark.parametrize(("scope", "model", "job_status", "expected"), [
+    (None, None, None, "scope"),
+    ({"scope_type": "ENTIRE_BUILDING"}, None, None, "model"),
+    ({"scope_type": "ENTIRE_BUILDING"}, {"id": "ifc"}, "QUEUED", "model-scan"),
+    ({"scope_type": "ENTIRE_BUILDING"}, {"id": "ifc"}, "RUNNING", "model-scan"),
+    ({"scope_type": "ENTIRE_BUILDING"}, {"id": "ifc"}, "FAILED", "model-scan"),
+    ({"scope_type": "ENTIRE_BUILDING"}, {"id": "ifc", "status": "QUEUED"}, "COMPLETED", "spatial"),
+])
+def test_firetrace_resume_uses_saved_state_and_latest_job(scope, model, job_status, expected):
+    progress = get_firetrace_resume_step(
+        {"name": "Saved", "project_reference": "FT-1"}, scope, model,
+        {"status": job_status} if job_status else None)
+    assert progress.resume_step == expected
+
+
+def test_brand_new_project_resumes_at_details():
+    assert get_firetrace_resume_step({}, None, None, None).resume_step == "details"
+
+
+def test_spatial_completion_advances_to_fire_strategy_and_model_replacement_resets_only_model_steps():
+    project = {"name": "Saved", "project_reference": "FT-1"}
+    scope = {"scope_type": "ENTIRE_BUILDING"}
+    completed = get_firetrace_resume_step(project, scope, {"id": "ifc"}, {"status": "COMPLETED"}, [
+        {"section_key": "SPATIAL_OCCUPANCY", "completion_status": "COMPLETE"},
+    ])
+    reset = get_firetrace_resume_step(project, scope, None, None)
+    assert completed.resume_step == "fire-strategy"
+    assert reset.resume_step == "model"
+    assert reset.completed_steps == frozenset({"details", "scope"})
+
+
+def test_completed_steps_are_available_but_future_steps_are_locked():
+    progress = get_firetrace_resume_step(
+        {"name": "Saved", "project_reference": "FT-1"}, {"scope_type": "ENTIRE_BUILDING"},
+        {"id": "ifc"}, {"status": "RUNNING"})
+    assert {"details", "scope", "model", "model-scan"} <= progress.available_steps
+    assert "spatial" not in progress.available_steps
+
+
+def test_completed_form_continue_is_navigation_without_repost_and_save_exit_targets_dashboard():
+    template = open("templates/firetrace/setup/wizard.html", encoding="utf-8").read()
+    assert "new URLSearchParams(new FormData(form)).toString()===initial" in template
+    assert "event.preventDefault();window.location.assign(next)" in template
+    assert "/app/firetrace/projects/{{ project_id }}" in template
 
 
 class FakeAuth:
