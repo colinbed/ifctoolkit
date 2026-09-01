@@ -9,11 +9,18 @@ create unique index if not exists fire_requirements_source_finding_key_uidx
 -- This independently protects the logical source identity (including legacy
 -- worker rows which predate source_finding_key). NULLS NOT DISTINCT makes a
 -- missing property set behave as one value rather than bypassing uniqueness.
-create unique nulls not distinct index if not exists fire_requirements_logical_finding_uidx
+create unique index if not exists fire_requirements_logical_finding_uidx
   on public.fire_requirements (
-    project_id, ifc_object_id, requirement_type, source_scope,
-    source_property_set, source_property_name, source_property_value, source_type
-  );
+    project_id,
+    ifc_object_id,
+    requirement_type,
+    source_scope,
+    source_property_set,
+    source_property_name,
+    source_property_value,
+    source_type
+  )
+  nulls not distinct;
 
 comment on column public.fire_requirements.source_finding_key is
   'Deterministic UUIDv5 of IFC file, object, requirement, scope, pset, property name and value.';
