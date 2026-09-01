@@ -29,13 +29,15 @@ def peak_rss_mb():
 
 
 def stage(spec, name, started, **extra):
-    LOGGER.info("EXCEL_EXTRACTION_STAGE stage=%s session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s elapsed_s=%.3f %s", name, spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb(), time.monotonic() - started, " ".join(f"{k}={v}" for k, v in extra.items()))
+    event = "IFC_WRITEBACK_STAGE" if spec.get("kind") == "update" else "EXCEL_EXTRACTION_STAGE"
+    LOGGER.info("%s stage=%s session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s elapsed_s=%.3f %s", event, name, spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb(), time.monotonic() - started, " ".join(f"{k}={v}" for k, v in extra.items()))
 
 
 def main(spec_path: str, result_path: str) -> int:
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     started = time.monotonic()
-    LOGGER.info("EXCEL_EXTRACTION_STARTED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s", spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb())
+    event = "IFC_WRITEBACK" if spec.get("kind") == "update" else "EXCEL_EXTRACTION"
+    LOGGER.info("%s_STARTED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s", event, spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb())
     try:
         # Import only in the disposable worker: importing IfcOpenShell itself loads native code.
         from app import extract_to_excel, update_ifc_from_excel
@@ -45,14 +47,15 @@ def main(spec_path: str, result_path: str) -> int:
             stage(spec, "worker_complete", started, workbook_rows=sum(v for v in rows.values() if isinstance(v, int)), peak_rss_mb=peak_rss_mb())
         else:
             stage(spec, "read_workbook", started)
-            update_ifc_from_excel(spec["input_path"], spec["excel_path"], spec["output_path"], update_mode=spec.get("update_mode", "update"), add_new=spec.get("add_new", "no"), session_id=spec["session_id"], endpoint="excel_job_worker")
-            result = {}
+            result = update_ifc_from_excel(spec["input_path"], spec["excel_path"], spec["output_path"], update_mode=spec.get("update_mode", "update"), add_new=spec.get("add_new", "no"), session_id=spec["session_id"], endpoint="excel_job_worker")
             stage(spec, "write_ifc", started)
         payload = {"status": "completed", "output_file_id": Path(spec["output_path"]).name, "result": result}
-        LOGGER.info("EXCEL_EXTRACTION_COMPLETED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s peak_rss_mb=%s elapsed_s=%.3f", spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb(), peak_rss_mb(), time.monotonic() - started)
+        LOGGER.info("%s_COMPLETED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s peak_rss_mb=%s elapsed_s=%.3f", event, spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb(), peak_rss_mb(), time.monotonic() - started)
     except Exception as exc:
-        LOGGER.error("EXCEL_EXTRACTION_FAILED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s elapsed_s=%.3f error=%s\n%s", spec.get("session_id"), spec.get("input_filename"), spec.get("input_size"), rss_mb(), time.monotonic() - started, exc, traceback.format_exc())
-        payload = {"status": "failed", "message": f"Processing failed: {exc}. You can retry.", "error": str(exc)}
+        LOGGER.error("%s_FAILED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s elapsed_s=%.3f error=%s\n%s", event, spec.get("session_id"), spec.get("input_filename"), spec.get("input_size"), rss_mb(), time.monotonic() - started, exc, traceback.format_exc())
+        findings = getattr(exc, "findings", None)
+        payload = {"status": "failed", "message": str(exc), "error": "workbook_validation_failed" if findings else "writeback_failed",
+                   "errors": (findings or {}).get("errors", []), "warnings": (findings or {}).get("warnings", [])}
     Path(result_path).write_text(json.dumps(payload), encoding="utf-8")
     return 0
 

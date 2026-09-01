@@ -1630,7 +1630,10 @@ async function applyExcel() {
     if (!resp.ok || !data.job_id) throw new Error(data.detail?.message || data.detail || "Could not start IFC update");
     const job = await pollExcelJob(data.job_id, "update");
     state.updatedIfcName = job.output_file_id;
-    el("excelStatus").textContent = `Complete — Updated IFC: ${job.output_file_id}`;
+    const warningText = (job.warnings || []).map((item) =>
+      `${item.sheet}${item.row ? ` row ${item.row}` : ""}${item.field ? `, ${item.field}` : ""}: ${item.message}`
+    ).join("\n");
+    el("excelStatus").textContent = `Complete — Updated IFC: ${job.output_file_id}${warningText ? `\nWarnings:\n${warningText}` : ""}`;
     if (downloadUpdatedBtn) downloadUpdatedBtn.classList.remove("hidden");
     await refreshFiles();
   });
@@ -1648,7 +1651,10 @@ async function pollExcelJob(jobId, kind) {
     if (job.status === "completed") return job;
     if (job.status === "failed") {
       const retry = job.recoverable ? " You can retry." : "";
-      const message = `${job.message || job.error || "Processing failed."}${retry}`;
+      const details = (job.errors || []).map((item) =>
+        `${item.sheet}${item.row ? ` row ${item.row}` : ""}${item.field ? `, ${item.field}` : ""}: ${item.message}`
+      ).join("; ");
+      const message = `${job.message || job.error || "Processing failed."}${details ? ` ${details}` : ""}${retry}`;
       el("excelStatus").textContent = message;
       throw new Error(message);
     }
