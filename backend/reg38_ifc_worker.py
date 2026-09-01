@@ -135,6 +135,12 @@ def process_job(sink: SupabaseBatchSink, job: dict[str, Any]) -> None:
             _log("storage_download_completed", job_id=job_id, bytes=path.stat().st_size)
             result = Regulation38IfcProcessor(progress).process(path, project_id=project_id, ifc_file_id=file_id)
             _log("counts_extracted", job_id=job_id, **result.statistics)
+            _log("space_geometry_summary", job_id=job_id,
+                 spaces_total=result.statistics.get("spaces", 0),
+                 spaces_with_polygon=result.statistics.get("spaces_with_plan_geometry", 0),
+                 spaces_centroid_only=result.statistics.get("spaces_centroid_only", 0),
+                 spaces_geometry_failed=result.statistics.get("spaces_without_plan_geometry", 0),
+                 failure_reasons=result.statistics.get("space_geometry_failure_reasons", {}))
             sink.update_job(job, current_step="WRITING_DATABASE", progress_percent=96, statistics=result.statistics)
             sink.insert_result(result.tables)
             _log("warnings_generated", job_id=job_id, count=len(result.tables["model_scan_warnings"]))
