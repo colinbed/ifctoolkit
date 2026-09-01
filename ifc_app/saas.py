@@ -51,6 +51,24 @@ REGULATION_38_SECTIONS = (
     "Completeness Review",
 )
 
+FIRETRACE_ROUTES = {
+    "home": "/app/firetrace",
+    "projects": "/app/firetrace/projects",
+    "new_project": "/app/firetrace/projects/new",
+    "project": "/app/firetrace/projects/{project_id}",
+    "setup": "/app/firetrace/projects/{project_id}/setup/{step}",
+}
+
+
+def _require_firetrace(request: Request) -> dict[str, Any] | HTMLResponse | RedirectResponse:
+    """Central FireTrace authentication and premium-entitlement boundary."""
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse):
+        return user
+    if not can_access_tool(get_account_profile(request), "regulation_38"):
+        return HTMLResponse("FireTrace requires a Premium, trial or administrator account.", status_code=403)
+    return user
+
 
 def context(request: Request, **extra: Any) -> dict[str, Any]:
     return {"request": request, "user": get_current_user(request), **extra}
@@ -445,24 +463,40 @@ def update_account(request: Request, name: str = Form(...)):
     )
 
 
-@router.get("/app/regulation-38", response_class=HTMLResponse)
+@router.get("/app/firetrace", response_class=HTMLResponse)
+def firetrace_home(request: Request):
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
+        return user
+    return templates.TemplateResponse(request=request, name="firetrace/dashboard.html",
+                                      context=_dashboard_context(request, user, routes=FIRETRACE_ROUTES))
+
+
+@router.get("/app/firetrace/projects", response_class=HTMLResponse)
+def firetrace_projects(request: Request):
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
+        return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    repo = Regulation38Repository(get_auth_service())
+    rows, can_create, list_error = [], False, False
+    try:
+        can_create = repo.resolve_create_permission(token).allowed
+        rows = repo.list_projects(token)
+    except (SupabaseAuthError, AttributeError) as exc:
+        LOGGER.error("FireTrace project list unavailable: %s", exc)
+        list_error = True
+    return templates.TemplateResponse(request=request, name="firetrace/projects.html",
+        context=_dashboard_context(request, user, projects=rows, can_create=can_create, list_error=list_error))
+
+
+@router.get("/app/regulation-38")
 def regulation_38(request: Request):
-    return projects(request)
+    return RedirectResponse(FIRETRACE_ROUTES["home"], status_code=308)
 
 
-WIZARD_ROUTE_MAP = (
-    ("details", "Project Details"), ("scope", "Regulation 38 Scope"), ("upload-ifc", "Upload IFC"),
-    ("model-scan", "Model Scan"), ("spaces-zones", "Review Spaces & Zones"),
-    ("fire-construction", "Review Fire Construction"), ("plans", "Generate Plans"),
-    ("information-requirements", "Configure Information Requirements"), ("summary", "Summary"),
-)
-WIZARD_STEPS = tuple(label for _, label in WIZARD_ROUTE_MAP)
-
-
-def wizard_url(project_id: str, step: int) -> str:
-    """Return the one canonical, refresh-safe URL for a wizard step."""
-    slug = WIZARD_ROUTE_MAP[max(1, min(step, len(WIZARD_ROUTE_MAP))) - 1][0]
-    return f"/app/regulation-38/projects/{project_id}/setup/{slug}"
+WIZARD_STEPS = ("Project Scope", "Design Information", "IFC Model", "Model Scan", "Spatial Review",
+                "Fire Strategy", "Evidence", "Compliance Review", "Handover / Export")
 
 
 def _wizard_response(request: Request, user: dict[str, Any], project: dict[str, Any] | None, step: int, **extra: Any):
@@ -471,15 +505,16 @@ def _wizard_response(request: Request, user: dict[str, Any], project: dict[str, 
               "steps": WIZARD_STEPS, "wizard_routes": {n: wizard_url(project_id, n) for n in range(1, 10)},
               "sections": [], "files": [], "error": None}
     values.update(extra)
-    return templates.TemplateResponse(request=request, name="saas/reg38_wizard.html",
+    return templates.TemplateResponse(request=request, name="firetrace/setup/wizard.html",
         context=_dashboard_context(request, user, **values))
 
 
 @router.get("/app/regulation-38/projects/new", response_class=HTMLResponse)
 @router.get("/app/projects/new", response_class=HTMLResponse)
+@router.get("/app/firetrace/projects/new", response_class=HTMLResponse)
 def new_reg38_project(request: Request):
-    user = _private_user(request)
-    if isinstance(user, RedirectResponse):
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
         return user
     token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     try:
@@ -492,6 +527,7 @@ def new_reg38_project(request: Request):
 
 @router.post("/app/regulation-38/projects/new")
 @router.post("/app/projects/new")
+@router.post("/app/firetrace/projects/new")
 async def create_reg38_project(request: Request):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -504,7 +540,7 @@ async def create_reg38_project(request: Request):
         project = ProjectCreate(**{key: (str(form.get(key) or "") or None) for key in ProjectCreate.__dataclass_fields__ if key not in {"project_status", "country"}},
                                 country=str(form.get("country") or "United Kingdom"))
         project_id = repository.create_project(token, project)
-        return RedirectResponse(f"/app/regulation-38/projects/{project_id}/setup/scope", status_code=303)
+        return RedirectResponse(f"/app/firetrace/projects/{project_id}/setup/scope", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
         message = str(exc) if isinstance(exc, ValueError) else exc.public_message
         return _wizard_response(request, user, dict(form), 1, error=message)
@@ -530,7 +566,54 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
         return HTMLResponse(exc.public_message, status_code=status)
 
 
+@router.get("/app/firetrace/projects/{project_id}", response_class=HTMLResponse)
+def firetrace_project_dashboard(request: Request, project_id: str):
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
+        return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        repo = Regulation38Repository(get_auth_service())
+        project = repo.get_project(token, project_id)
+        if not project:
+            return HTMLResponse("Project not found.", status_code=404)
+        return templates.TemplateResponse(request=request, name="firetrace/project.html",
+            context=_dashboard_context(request, user, project=project, project_id=project_id, routes=FIRETRACE_ROUTES))
+    except SupabaseAuthError as exc:
+        return HTMLResponse(exc.public_message, status_code=exc.status_code)
+
+
+@router.get("/app/firetrace/projects/{project_id}/{area}", response_class=HTMLResponse)
+def firetrace_project_area(request: Request, project_id: str, area: str):
+    areas = {
+        "model": ("Design Model", "Model processing, assurance findings and replacement controls."),
+        "spatial": ("Spaces", "Building, storey, space, fire-compartment and occupancy information."),
+        "fire-strategy": ("Fire Strategy", "Review model-derived fire safety information and its provenance."),
+        "requirements": ("Requirements", "Structured information requirements and review status."),
+        "evidence": ("Evidence", "Evidence coverage, source and traceability."),
+        "compliance": ("Compliance", "Regulation 38, BS 8644, ISO 19650 and project requirement lenses."),
+        "export": ("Handover / Export", "Controlled FireTrace deliverables and outstanding-information reporting."),
+    }
+    if area not in areas:
+        return HTMLResponse("FireTrace area not found.", status_code=404)
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
+        return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        project = Regulation38Repository(get_auth_service()).get_project(token, project_id)
+        if not project:
+            return HTMLResponse("Project not found.", status_code=404)
+        title, description = areas[area]
+        return templates.TemplateResponse(request=request, name="firetrace/area.html",
+            context=_dashboard_context(request, user, project=project, project_id=project_id,
+                                       area=area, title=title, description=description))
+    except SupabaseAuthError as exc:
+        return HTMLResponse(exc.public_message, status_code=exc.status_code)
+
+
 @router.get("/app/regulation-38/projects/{project_id}/setup/{setup_step}", response_class=HTMLResponse)
+@router.get("/app/firetrace/projects/{project_id}/setup/{setup_step}", response_class=HTMLResponse)
 def regulation_38_setup(request: Request, project_id: str, setup_step: str):
     step_map = {slug: index for index, (slug, _) in enumerate(WIZARD_ROUTE_MAP, 1)}
     if setup_step not in step_map:
@@ -539,6 +622,7 @@ def regulation_38_setup(request: Request, project_id: str, setup_step: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/details")
+@router.post("/app/firetrace/projects/{project_id}/details")
 async def update_reg38_details(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -553,6 +637,7 @@ async def update_reg38_details(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/scope")
+@router.post("/app/firetrace/projects/{project_id}/scope")
 async def update_reg38_scope(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -567,6 +652,7 @@ async def update_reg38_scope(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/ifc/initiate")
+@router.post("/app/firetrace/projects/{project_id}/ifc/initiate")
 async def initiate_reg38_ifc(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -582,6 +668,7 @@ async def initiate_reg38_ifc(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/ifc/finalize")
+@router.post("/app/firetrace/projects/{project_id}/ifc/finalize")
 async def finalize_reg38_ifc(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -603,6 +690,7 @@ async def finalize_reg38_ifc(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/ifc/failure")
+@router.post("/app/firetrace/projects/{project_id}/ifc/failure")
 async def report_reg38_ifc_failure(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -625,6 +713,7 @@ async def report_reg38_ifc_failure(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/ifc/{file_id}/remove")
+@router.post("/app/firetrace/projects/{project_id}/ifc/{file_id}/remove")
 async def remove_reg38_ifc(request: Request, project_id: str, file_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -653,6 +742,7 @@ async def delete_draft_reg38_project(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/ifc/{file_id}/retry")
+@router.post("/app/firetrace/projects/{project_id}/ifc/{file_id}/retry")
 async def retry_reg38_ifc(request: Request, project_id: str, file_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -665,6 +755,7 @@ async def retry_reg38_ifc(request: Request, project_id: str, file_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/spaces/{space_id}")
+@router.post("/app/firetrace/projects/{project_id}/spaces/{space_id}")
 async def update_reg38_space(request: Request, project_id: str, space_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -682,6 +773,7 @@ async def update_reg38_space(request: Request, project_id: str, space_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/zones")
+@router.post("/app/firetrace/projects/{project_id}/zones")
 async def create_reg38_zone(request: Request, project_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user
@@ -696,6 +788,7 @@ async def create_reg38_zone(request: Request, project_id: str):
 
 
 @router.post("/app/projects/{project_id}/regulation-38/zones/{zone_id}")
+@router.post("/app/firetrace/projects/{project_id}/zones/{zone_id}")
 async def update_reg38_zone(request: Request, project_id: str, zone_id: str):
     user = _private_user(request)
     if isinstance(user, RedirectResponse): return user

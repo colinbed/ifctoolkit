@@ -310,9 +310,12 @@ def test_mocked_supabase_login_private_navigation_and_logout(monkeypatch):
     assert 'value="member@example.com"' in account.text
 
     regulation_38 = request("GET", "/app/regulation-38", headers={"cookie": session_cookie})
-    assert regulation_38.status_code == 200
-    assert "Fire Safety Information" in regulation_38.text
-    assert "does not automatically demonstrate legal or regulatory compliance" in regulation_38.text
+    assert regulation_38.status_code == 308
+    assert regulation_38.header("location") == "/app/firetrace"
+    firetrace = request("GET", "/app/firetrace", headers={"cookie": session_cookie})
+    assert firetrace.status_code == 200
+    assert "Fire Information Compliance Platform" in firetrace.text
+    assert "does not replace competent-person judgement" in firetrace.text
 
     logout = request("POST", "/logout", headers={"cookie": session_cookie})
     assert logout.status_code == 303
@@ -361,25 +364,25 @@ def test_admin_landing_keeps_create_action_when_project_list_fails(monkeypatch, 
     fake = Regulation38AdminAuth()
     fake.list_fails = True
     cookie = _admin_cookie(monkeypatch, fake)
-    response = request("GET", "/app/regulation-38", headers={"cookie": cookie})
+    response = request("GET", "/app/firetrace/projects", headers={"cookie": cookie})
     assert response.status_code == 200
-    assert '+ New Project</a>' in response.text
-    assert "Active Projects" in response.text and response.text.count("—") >= 3
-    assert "You can still create a new project." in response.text
-    assert "No Regulation 38 projects yet" not in response.text
+    assert '>New Project</a>' in response.text
+    assert "Projects could not be loaded" in response.text
+    assert "Please try again." in response.text
+    assert "No FireTrace projects yet" not in response.text
     assert "projects.building_name" in caplog.text
 
 
 def test_admin_zero_projects_has_create_cta_and_direct_wizard_is_independent(monkeypatch):
     fake = Regulation38AdminAuth()
     cookie = _admin_cookie(monkeypatch, fake)
-    landing = request("GET", "/app/regulation-38", headers={"cookie": cookie})
-    assert "No Regulation 38 projects yet" in landing.text
-    assert '+ Create Project</a>' in landing.text
-    assert "Active Projects" in landing.text and ">0</strong>" in landing.text
+    landing = request("GET", "/app/firetrace/projects", headers={"cookie": cookie})
+    assert "No FireTrace projects yet" in landing.text
+    assert '>New FireTrace Project</a>' in landing.text
+    assert "FIRETRACE PROJECTS" in landing.text
     direct = request("GET", "/app/regulation-38/projects/new", headers={"cookie": cookie})
     assert direct.status_code == 200
-    assert "Project Details" in direct.text
+    assert "Project Scope" in direct.text
 
 
 def test_application_new_project_post_calls_rpc_and_redirects_to_scope(monkeypatch):
@@ -402,9 +405,9 @@ def test_member_cannot_see_create_or_open_direct_wizard(monkeypatch):
     original = fake._request_json
     fake._request_json = lambda method, url, **kwargs: False if url.endswith("/rpc/can_create_project") else original(method, url, **kwargs)
     cookie = _admin_cookie(monkeypatch, fake)
-    landing = request("GET", "/app/regulation-38", headers={"cookie": cookie})
+    landing = request("GET", "/app/firetrace/projects", headers={"cookie": cookie})
     assert "+ New Project" not in landing.text and "+ Create Project" not in landing.text
-    assert "No Regulation 38 projects are currently assigned to you." in landing.text
+    assert "No FireTrace projects yet" in landing.text
     assert request("GET", "/app/regulation-38/projects/new", headers={"cookie": cookie}).status_code == 403
 
 
