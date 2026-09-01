@@ -13,4 +13,4 @@
 <script id="spatial-data" type="application/json">{{ spatial|tojson }}</script>
 <script>window.reg38SpatialConfig = {projectId: {{ project_id|tojson }}, zoneTypes: {{ zone_types|tojson }}, canAdmin: {{ spatial.can_admin|tojson }}};</script>
 <script src="/static/reg38-spatial.js"></script>
-<div class="wizard-actions"><a class="button ghost" href="?step=4">Back</a><a class="button" href="?step=6">Save & Next</a></div>
+<div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[4] }}">Back</a><a class="button" href="{{ wizard_routes[6] }}">Save & Next</a></div>

@@ -255,7 +255,7 @@ class Regulation38Repository:
                 json={"applicability_status": applicability.get(section["section_key"], "TO_BE_CONFIRMED"), "enabled": True})
 
     def list_ifc_files(self, token: str, project_id: str) -> list[dict[str, Any]]:
-        query = "select=id,original_filename,file_size,status,storage_path,ifc_processing_jobs(id,status,progress_percent)&order=created_at.desc"
+        query = "select=id,original_filename,file_size,status,storage_path,ifc_schema,created_at,ifc_processing_jobs(id,status,progress_percent,statistics,completed_at,created_at)&order=created_at.desc"
         rows = self._data_request("GET", f"ifc_files?project_id=eq.{quote(project_id)}&{query}", token)
         return [dict(row) for row in rows] if isinstance(rows, list) else []
 
@@ -356,10 +356,39 @@ class Regulation38Repository:
         expected_prefix = f"projects/{project_id}/models/{file_id}/"
         if not storage_path.startswith(expected_prefix):
             raise ValueError("The IFC file path is invalid.")
-        self._data_request("DELETE", f"ifc_processing_jobs?ifc_file_id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}&status=eq.QUEUED", token)
-        self._data_request("DELETE", f"ifc_files?id=eq.{quote(file_id)}&project_id=eq.{quote(project_id)}", token)
+        # One transaction removes every row derived from this model while retaining
+        # manual scope/configuration. Storage is necessarily handled separately.
+        self._data_request("POST", "rpc/remove_reg38_ifc_model", token,
+                           json={"target_project": project_id, "target_file": file_id})
         url = f"{self.auth.settings.project_url}/storage/v1/object/{quote(self.bucket, safe='')}/{quote(storage_path, safe='/')}"
         requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
+
+    def acknowledge_missing_spatial_data(self, token: str, project_id: str, user_id: str) -> None:
+        self.require_project_edit(token, project_id)
+        self._data_request("POST", "rpc/acknowledge_reg38_missing_spatial_data", token,
+                           json={"target_project": project_id, "target_user": user_id})
+
+    def delete_draft_project(self, token: str, project_id: str) -> None:
+        """Delete private objects first, then transactionally remove a DRAFT project."""
+        if self.project_role(token, project_id) not in {"OWNER", "ADMIN"} and not self.is_platform_admin(token):
+            raise SupabaseAuthError("Only a project owner or administrator can delete a draft project.", status_code=403)
+        prefix = f"projects/{project_id}/"
+        list_url = f"{self.auth.settings.project_url}/storage/v1/object/list/{quote(self.bucket, safe='')}"
+        response = requests.post(list_url, headers=self.auth._headers(token),
+                                 json={"prefix": prefix, "limit": 1000, "offset": 0},
+                                 timeout=self.auth.settings.request_timeout_seconds)
+        if not 200 <= response.status_code < 300:
+            raise SupabaseAuthError("Project files could not be cleaned up.", status_code=502)
+        objects = response.json() if getattr(response, "content", None) else []
+        paths = [prefix + str(item["name"]) for item in objects if isinstance(item, Mapping) and item.get("name")]
+        if paths:
+            delete_url = f"{self.auth.settings.project_url}/storage/v1/object/{quote(self.bucket, safe='')}"
+            deleted = requests.delete(delete_url, headers=self.auth._headers(token), json={"prefixes": paths},
+                                      timeout=self.auth.settings.request_timeout_seconds)
+            if not 200 <= deleted.status_code < 300:
+                raise SupabaseAuthError("Project files could not be cleaned up.", status_code=502)
+        self._data_request("POST", "rpc/delete_draft_reg38_project", token,
+                           json={"target_project": project_id})
 
     def cleanup_failed_upload(self, token: str, project_id: str, storage_path: str) -> None:
         """Remove an uploaded object that never reached atomic finalization."""
@@ -396,7 +425,9 @@ class Regulation38Repository:
             return {"job": None, "warnings": []}
         file = files[0]
         jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at.desc&limit=1", token)
-        warnings = self._data_request("GET", f"model_scan_warnings?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at", token)
+        # Aggregate counts live in job.statistics. Bound preview rows so a model
+        # with thousands of findings never creates a multi-megabyte wizard page.
+        warnings = self._data_request("GET", f"model_scan_warnings?ifc_file_id=eq.{quote(str(file['id']))}&select=id,warning_code,title,severity&order=created_at&limit=100", token)
         job = dict(jobs[0]) if isinstance(jobs, list) and jobs else None
         LOGGER.info(
             "reg38_model_scan_prerequisites reference=%s project_id=%s authenticated_user_id=%s created_by=%s "
