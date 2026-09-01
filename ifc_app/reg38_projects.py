@@ -258,7 +258,7 @@ class Regulation38Repository:
         model = files[0] if files else None
         job = None
         if model:
-            rows = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(model['id']))}&select=*&order=created_at.desc&limit=1", token)
+            rows = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(model['id']))}&select=*&order=created_at.desc,id.desc&limit=1", token)
             job = dict(rows[0]) if isinstance(rows, list) and rows else None
         return get_firetrace_resume_step(project, scope, model, job, sections)
 
@@ -443,7 +443,7 @@ class Regulation38Repository:
             )
             return {"job": None, "warnings": []}
         file = files[0]
-        jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at.desc&limit=1", token)
+        jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at.desc,id.desc&limit=1", token)
         # Aggregate counts live in job.statistics. Bound preview rows so a model
         # with thousands of findings never creates a multi-megabyte wizard page.
         warnings = self._data_request("GET", f"model_scan_warnings?ifc_file_id=eq.{quote(str(file['id']))}&select=id,warning_code,title,severity&order=created_at&limit=100", token)
@@ -464,6 +464,23 @@ class Regulation38Repository:
         value = self._data_request("POST", "rpc/retry_reg38_ifc_job", token, json={"target_file": file_id})
         return str(value)
 
+    def rerun_model_scan(self, token: str, project_id: str, file_id: str, user_id: str) -> str:
+        """Queue a fresh job for a completed file without replacing its source object."""
+        self.require_project_admin(token, project_id)
+        scan = self.model_scan(token, project_id, user_id)
+        current_file, previous_job = scan.get("file"), scan.get("job")
+        if not current_file or str(current_file.get("id")) != file_id:
+            raise SupabaseAuthError("The current IFC model could not be found.", status_code=404)
+        if str((previous_job or {}).get("status") or "").upper() not in {"COMPLETED", "SUCCEEDED"}:
+            raise SupabaseAuthError("Only a completed Model Scan can be re-run.", status_code=409)
+        value = self._data_request("POST", "rpc/rerun_reg38_ifc_job", token, json={"target_file": file_id})
+        new_job_id = str(value)
+        LOGGER.info(
+            "event=model_scan_rerun_requested project_id=%s file_id=%s previous_job_id=%s new_job_id=%s user_id=%s",
+            project_id, file_id, previous_job.get("id"), new_job_id, user_id,
+        )
+        return new_job_id
+
     def require_project_admin(self, token: str, project_id: str) -> None:
         if self.project_role(token, project_id) not in {"OWNER", "ADMIN"}:
             raise SupabaseAuthError("Only a project owner or administrator can review spaces and zones.", status_code=403)
@@ -479,9 +496,15 @@ class Regulation38Repository:
         zones = self._data_request("GET", f"project_zones?project_id=eq.{pid}&select=*&order=name", token)
         grids = self._data_request("GET", f"project_grids?project_id=eq.{pid}&select=*,project_grid_axes(*)&order=name", token)
         members = self._data_request("GET", f"project_zone_members?zone_id=in.({','.join(str(z['id']) for z in zones)})&select=id,zone_id,space_id,source", token) if zones else []
-        return {"spaces": spaces if isinstance(spaces, list) else [], "zones": zones if isinstance(zones, list) else [],
+        spaces = spaces if isinstance(spaces, list) else []
+        def geometry_needs_backfill(space: Mapping[str, Any]) -> bool:
+            geometry = space.get("source_geometry")
+            return (not isinstance(geometry, Mapping) or geometry.get("type") != "Polygon"
+                    or not geometry.get("coordinates") or bool(geometry.get("reason")))
+        return {"spaces": spaces, "zones": zones if isinstance(zones, list) else [],
                 "grids": grids if isinstance(grids, list) else [], "members": members if isinstance(members, list) else [],
-                "can_admin": self.project_role(token, project_id) in {"OWNER", "ADMIN"}}
+                "can_admin": self.project_role(token, project_id) in {"OWNER", "ADMIN"},
+                "geometry_backfill_required": any(geometry_needs_backfill(space) for space in spaces)}
 
     def spatial_storey_plan(self, token: str, project_id: str, storey_id: str) -> dict[str, Any]:
         """Return persisted lightweight geometry for one authorised storey."""

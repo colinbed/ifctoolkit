@@ -790,6 +790,20 @@ async def retry_reg38_ifc(request: Request, project_id: str, file_id: str):
         return HTMLResponse(exc.public_message, status_code=exc.status_code)
 
 
+@router.post("/app/projects/{project_id}/regulation-38/ifc/{file_id}/rerun")
+@router.post("/app/firetrace/projects/{project_id}/ifc/{file_id}/rerun")
+async def rerun_reg38_ifc(request: Request, project_id: str, file_id: str):
+    user = _private_user(request)
+    if isinstance(user, RedirectResponse): return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        Regulation38Repository(get_auth_service()).rerun_model_scan(
+            token, project_id, file_id, str(user.get("id") or ""))
+        return RedirectResponse(firetrace_wizard_url(project_id, 4), status_code=303)
+    except SupabaseAuthError as exc:
+        return HTMLResponse(exc.public_message, status_code=exc.status_code)
+
+
 @router.post("/app/projects/{project_id}/regulation-38/spaces/{space_id}")
 @router.post("/app/firetrace/projects/{project_id}/spaces/{space_id}")
 async def update_reg38_space(request: Request, project_id: str, space_id: str):
