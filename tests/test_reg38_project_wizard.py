@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import ifc_app.reg38_projects as module
+import ifc_app.saas as saas
 from ifc_app.reg38_projects import ProjectCreate, Regulation38Repository, validate_ifc
 
 
@@ -316,6 +317,65 @@ def test_model_scan_missing_project_is_the_only_repository_404():
     with pytest.raises(module.SupabaseAuthError) as caught:
         Regulation38Repository(ModelScanAuth(project=False)).model_scan("token", "missing", "auth-user-id")
     assert caught.value.status_code == 404 and caught.value.public_message == "Project not found."
+
+
+def _render_model_scan(status, warnings=None):
+    return saas.templates.env.get_template("saas/reg38_model_scan.html").render(
+        project_id="project-id",
+        model_scan={
+            "file": {"id": "model-id"},
+            "job": ({"status": status, "statistics": {}} if status else None),
+            "warnings": warnings or [],
+        },
+    )
+
+
+def test_completed_model_scan_shows_continue_to_step_five():
+    html = _render_model_scan("COMPLETED")
+    assert ">Continue</a>" in html
+    assert 'href="/app/regulation-38/projects/project-id/setup/spaces-zones"' in html
+    assert 'href="?step=3">Back</a>' in html
+
+
+def test_running_model_scan_hides_continue():
+    assert ">Continue</a>" not in _render_model_scan("RUNNING")
+
+
+def test_failed_model_scan_shows_retry_and_hides_continue():
+    html = _render_model_scan("FAILED")
+    assert ">Retry Scan</button>" in html
+    assert ">Continue</a>" not in html
+
+
+def test_completed_model_scan_warnings_are_collapsed_by_default():
+    html = _render_model_scan("COMPLETED", [
+        {"title": "Custom fire property match", "description": "Example"}
+        for _ in range(2309)
+    ])
+    assert "2309 warnings" in html
+    assert "<details>" in html and "Review all 2309 warnings" in html
+    assert "<details open" not in html
+
+
+def test_step_five_named_setup_route_dispatches_to_spatial_review(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(saas, "regulation_38_project", lambda request, project_id, step: captured.update(
+        request=request, project_id=project_id, step=step) or "step-five")
+    request = object()
+    assert saas.regulation_38_setup(request, "project-id", "spaces-zones") == "step-five"
+    assert captured == {"request": request, "project_id": "project-id", "step": 5}
+
+
+def test_every_wizard_step_has_a_forward_action():
+    template = open("templates/saas/reg38_wizard.html", encoding="utf-8").read()
+    scan = open("templates/saas/reg38_model_scan.html", encoding="utf-8").read()
+    spatial = open("templates/saas/reg38_spatial_review.html", encoding="utf-8").read()
+    assert "Save & Next" in template  # Steps 1 and 2.
+    assert "Next: Model Scan" in template  # Step 3.
+    assert ">Continue</a>" in scan and "/setup/spaces-zones" in scan  # Step 4.
+    assert 'href="?step=6">Save & Next</a>' in spatial  # Step 5.
+    assert '{% if step < 9 %}<a class="button" href="?step={{ step+1 }}">Next</a>' in template  # Steps 6-8.
+    assert 'href="/app/projects">Return to projects</a>' in template  # Step 9.
 
 
 def test_model_scan_unauthorized_project_access_is_403():
