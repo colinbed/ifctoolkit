@@ -261,8 +261,7 @@ class Regulation38Repository:
         project_id = str(project["id"])
         scope = self.get_scope(token, project_id)
         sections = self.get_sections(token, project_id)
-        files = self.list_ifc_files(token, project_id)
-        model = files[0] if files else None
+        model = self.get_current_ifc_file(token, project_id)
         job = None
         if model:
             rows = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(model['id']))}&select=*&order=created_at.desc,id.desc&limit=1", token)
@@ -280,9 +279,19 @@ class Regulation38Repository:
                 json={"applicability_status": applicability.get(section["section_key"], "TO_BE_CONFIRMED"), "enabled": True})
 
     def list_ifc_files(self, token: str, project_id: str) -> list[dict[str, Any]]:
-        query = "select=id,original_filename,file_size,status,storage_path,ifc_schema,created_at,ifc_processing_jobs(id,status,progress_percent,statistics,completed_at,created_at)&order=created_at.desc"
+        query = "select=id,original_filename,file_size,status,storage_path,ifc_schema,created_at,ifc_processing_jobs(id,status,progress_percent,statistics,completed_at,created_at)&order=created_at.desc,id.desc"
         rows = self._data_request("GET", f"ifc_files?project_id=eq.{quote(project_id)}&{query}", token)
         return [dict(row) for row in rows] if isinstance(rows, list) else []
+
+    def get_current_ifc_file(self, token: str, project_id: str) -> dict[str, Any] | None:
+        """Resolve the current model using the established newest-upload semantics.
+
+        IFC replacement retains history, so ``created_at`` (then ``id`` for a
+        deterministic tie break) is the sole model selector.  There is no
+        ``ifc_files.is_current`` column in the canonical schema.
+        """
+        files = self.list_ifc_files(token, project_id)
+        return files[0] if files else None
 
     def create_ifc_upload(self, token: str, project_id: str, filename: str, size: int) -> dict[str, str]:
         safe_name = Path(filename).name
@@ -441,15 +450,14 @@ class Regulation38Repository:
         members = self._data_request(
             "GET", f"project_members?project_id=eq.{quote(project_id)}&select=id,user_id,role", token)
         member_user_ids = [str(row.get("user_id") or "") for row in members if isinstance(row, Mapping)]
-        files = self.list_ifc_files(token, project_id)
-        if not files:
+        file = self.get_current_ifc_file(token, project_id)
+        if not file:
             LOGGER.info(
                 "reg38_model_scan_prerequisites reference=%s project_id=%s authenticated_user_id=%s "
                 "created_by=%s member_user_ids=%s project=present finalized_ifc_file=missing processing_job=missing",
                 reference, project_id, authenticated_user_id, project.get("created_by"), member_user_ids,
             )
             return {"job": None, "warnings": []}
-        file = files[0]
         jobs = self._data_request("GET", f"ifc_processing_jobs?ifc_file_id=eq.{quote(str(file['id']))}&select=*&order=created_at.desc,id.desc&limit=1", token)
         # Aggregate counts live in job.statistics. Bound preview rows so a model
         # with thousands of findings never creates a multi-megabyte wizard page.
@@ -539,8 +547,7 @@ class Regulation38Repository:
         if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
             raise SupabaseAuthError("You cannot access this project.", status_code=403)
         pid = quote(project_id)
-        files = self._data_request("GET", f"ifc_files?project_id=eq.{pid}&is_current=eq.true&select=id,status&limit=1", token)
-        model = files[0] if isinstance(files, list) and files else None
+        model = self.get_current_ifc_file(token, project_id)
         if not model:
             return {"ready": False, "error": "Model Scan data is missing. Complete Model Scan before reviewing Fire Strategy."}
         mid = quote(str(model["id"]))
@@ -550,6 +557,9 @@ class Regulation38Repository:
             return {"ready": False, "error": "Model processing must complete successfully before Fire Strategy review."}
         objects = self._data_request("GET", f"ifc_objects?project_id=eq.{pid}&ifc_file_id=eq.{mid}&select=*,building_storeys(id,name),ifc_object_properties(property_set,property_name,property_value_text,source_scope)&order=ifc_entity,name", token)
         objects = objects if isinstance(objects, list) else []
+        spaces = self._data_request(
+            "GET", f"project_spaces?project_id=eq.{pid}&select=id,storey_id,space_number,name,source_geometry,working_geometry&order=space_number", token)
+        spaces = spaces if isinstance(spaces, list) else []
         all_reviews = self._data_request("GET", f"fire_strategy_reviews?project_id=eq.{pid}&select=*", token)
         all_reviews = all_reviews if isinstance(all_reviews, list) else []
         existing = [row for row in all_reviews if str(row.get("model_id")) == str(model["id"])]
@@ -594,7 +604,8 @@ class Regulation38Repository:
         object_by_guid = {str(obj.get("ifc_global_id")): obj for obj in objects}
         reviews = [{**row, "object": object_by_guid.get(str(row.get("ifc_global_id")))} for row in existing]
         summary = self._fire_strategy_summary(reviews)
-        return {"ready": True, "model": model, "objects": objects, "reviews": reviews, "summary": summary,
+        return {"ready": True, "model": model, "objects": objects, "spaces": spaces,
+                "reviews": reviews, "summary": summary,
                 "can_edit": self.project_role(token, project_id) in {"OWNER", "ADMIN", "EDITOR"},
                 "categories": FIRE_STRATEGY_CATEGORIES}
 

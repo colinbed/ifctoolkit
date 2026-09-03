@@ -570,7 +570,14 @@ def regulation_38_project(request: Request, project_id: str, step: int = 1):
                     file["ifc_processing_jobs"] = [dict(progress.job)]
         model_scan = repo.model_scan(token, project_id, str(user.get("id") or "")) if step == 4 else {}
         spatial = repo.spatial_review(token, project_id) if step == 5 else {}
-        fire_strategy = repo.fire_strategy(token, project_id, str(user.get("id") or "")) if step == 6 else {}
+        fire_strategy = {}
+        if step == 6:
+            try:
+                fire_strategy = repo.fire_strategy(token, project_id, str(user.get("id") or ""))
+            except SupabaseAuthError as exc:
+                LOGGER.exception("fire_strategy_load_failed project_id=%s detail=%s", project_id, exc.detail)
+                fire_strategy = {"ready": False,
+                    "error": "Fire Strategy could not be loaded. Your setup progress has been preserved; try again or go back."}
         return _wizard_response(request, user, project, max(1, min(step, 9)), sections=sections, files=files,
                                 model_scan=model_scan, spatial=spatial, zone_types=ZONE_TYPES,
                                 fire_strategy=fire_strategy, progress=progress, scope=scope)

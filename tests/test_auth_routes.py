@@ -429,6 +429,17 @@ def test_every_canonical_firetrace_wizard_route_renders_and_navigation_exists(mo
         if index < len(FIRETRACE_WIZARD_STEPS) and index not in {1, 2, 3, 4, 5, 6}:
             assert firetrace_wizard_url("project-id", index + 1) in response.text
 
+    # A backend read failure on Step 6 is a recoverable workspace state, not a
+    # gateway error, and the user retains a route back to Spatial Review.
+    def failed_strategy(self, token, project_id, user_id):
+        raise supabase_auth.SupabaseAuthError("Projects could not be loaded.", status_code=400,
+                                              detail="production schema mismatch")
+    monkeypatch.setattr(repository, "fire_strategy", failed_strategy)
+    response = request("GET", firetrace_wizard_url("project-id", 6), headers={"cookie": cookie})
+    assert response.status_code == 200
+    assert "setup progress has been preserved" in response.text
+    assert firetrace_wizard_url("project-id", 5) in response.text
+
 
 def test_dashboard_continue_setup_and_legacy_wizard_routes_are_canonical(monkeypatch):
     fake = Regulation38AdminAuth()

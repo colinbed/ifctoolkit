@@ -485,7 +485,7 @@ def test_all_adjacent_wizard_routes_are_canonical():
 
 
 def test_lifecycle_migration_is_transactional_and_preserves_manual_configuration():
-    sql = open("supabase/migrations/202609010001_reg38_ifc_lifecycle.sql", encoding="utf-8").read().lower()
+    sql = open("supabase/migrations/202609011310_reg38_ifc_lifecycle.sql", encoding="utf-8").read().lower()
     assert "remove_reg38_ifc_model" in sql and "delete from public.ifc_files" in sql
     assert "source_kind <> 'manual'" in sql and "source_type <> 'manual'" in sql
     assert "spatial_ifc_acknowledged_at" in sql and "reg38_project_audit_events" in sql
