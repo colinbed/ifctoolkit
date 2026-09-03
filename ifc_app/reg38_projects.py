@@ -35,7 +35,7 @@ FIRE_STRATEGY_CATEGORIES = ("COMPARTMENTATION", "FIRE_RESISTING_CONSTRUCTION", "
     "ESCAPE_ROUTES", "DETECTION_ALARM", "EMERGENCY_LIGHTING", "SMOKE_CONTROL", "FIRE_SUPPRESSION",
     "FIREFIGHTING_FACILITIES", "SIGNAGE", "FIRE_SERVICE_ACCESS", "OTHER")
 FIRE_RELEVANT_ENTITIES = {"IfcDoor", "IfcWall", "IfcWallStandardCase", "IfcSlab", "IfcWindow", "IfcCurtainWall",
-    "IfcStair", "IfcRamp", "IfcRailing", "IfcCovering", "IfcDamper", "IfcFan", "IfcAlarm", "IfcSensor",
+    "IfcColumn", "IfcStair", "IfcRamp", "IfcRailing", "IfcCovering", "IfcDamper", "IfcFan", "IfcAlarm", "IfcSensor",
     "IfcLightFixture", "IfcFireSuppressionTerminal", "IfcDistributionElement", "IfcSpace", "IfcZone",
     "IfcSpatialZone", "IfcSystem", "IfcGroup"}
 FIRE_STRATEGY_PAGE_SIZE = 500
@@ -556,7 +556,8 @@ class Regulation38Repository:
         if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
             raise SupabaseAuthError("You cannot access this project.", status_code=403)
         rows = self._data_request("GET", f"project_spaces?project_id=eq.{quote(project_id)}&storey_id=eq.{quote(storey_id)}"
-                                  "&select=id,storey_id,space_number,name,description,source_geometry&order=space_number", token)
+                                  "&select=id,storey_id,source_ifc_object_id,ifc_global_id,space_number,name,description,"
+                                  "centroid_x,centroid_y,source_geometry,working_geometry&order=space_number", token)
         spaces = rows if isinstance(rows, list) else []
         return {"project_id": project_id, "storey_id": storey_id, "spaces": spaces,
                 "geometry_status": "available" if any((s.get("source_geometry") or {}).get("coordinates") for s in spaces) else "unavailable"}
@@ -584,10 +585,16 @@ class Regulation38Repository:
                     project_id, model["id"], len(properties), round((perf_counter() - property_started) * 1000))
         object_started = perf_counter()
         entity_filter = ",".join(sorted(FIRE_RELEVANT_ENTITIES))
-        object_select = "id,ifc_global_id,ifc_entity,name,long_name,description,object_type,predefined_type,storey_id,building_storeys(id,name)"
+        object_select = "id,ifc_global_id,ifc_entity,name,long_name,description,object_type,predefined_type,storey_id,geometry_metadata,building_storeys(id,name)"
         objects = self._paged_data_request(
             f"ifc_objects?project_id=eq.{pid}&ifc_file_id=eq.{mid}&ifc_entity=in.({entity_filter})&select={object_select}&order=ifc_entity,name,id", token)
         known_ids = {str(obj.get("id")) for obj in objects}
+        named_objects = self._paged_data_request(
+            f"ifc_objects?project_id=eq.{pid}&ifc_file_id=eq.{mid}"
+            f"&or=(name.ilike.*fire*,long_name.ilike.*fire*,object_type.ilike.*fire*)&select={object_select}&order=ifc_entity,name,id", token)
+        for obj in named_objects:
+            if str(obj.get("id")) not in known_ids:
+                objects.append(obj); known_ids.add(str(obj.get("id")))
         property_object_ids = list(dict.fromkeys(str(prop["ifc_object_id"]) for prop in properties if prop.get("ifc_object_id")))
         for offset in range(0, len(property_object_ids), FIRE_STRATEGY_ID_BATCH_SIZE):
             missing = [value for value in property_object_ids[offset:offset + FIRE_STRATEGY_ID_BATCH_SIZE] if value not in known_ids]
@@ -628,12 +635,19 @@ class Regulation38Repository:
             reasons = []
             if obj.get("ifc_entity") in FIRE_RELEVANT_ENTITIES:
                 reasons.append(f"IFC entity {obj['ifc_entity']} is potentially fire relevant")
+            descriptor = " ".join(str(obj.get(key) or "") for key in ("name", "long_name", "object_type"))
+            if "fire" in descriptor.lower():
+                reasons.append(f"Fire-related object text detected: {descriptor.strip()}")
             for prop in properties_by_object.get(str(obj.get("id")), []):
-                reasons.append(f"{prop.get('property_set') or 'IFC'}.{prop.get('property_name')} is populated")
+                value = str(prop.get("property_value_text") or "").strip()
+                reasons.append(f"Fire-related property detected: {prop.get('property_set') or 'IFC'}.{prop.get('property_name')}"
+                               f"{f' = {value}' if value else ''}")
             gid = str(obj.get("ifc_global_id") or "")
             if reasons and gid and gid not in existing_guids:
                 seed = {"project_id": project_id, "model_id": model["id"], "ifc_object_id": obj["id"],
                     "ifc_global_id": gid, "entity_type": obj.get("ifc_entity"), "automatically_suggested": True,
+                    "manually_selected": False, "relevance": "REVIEW_REQUIRED", "review_status": "NOT_STARTED",
+                    "suggested_categories": self._suggested_fire_categories(obj),
                     "suggestion_reason": "Suggested because " + "; ".join(dict.fromkeys(reasons)),
                     "original_values": {key: obj.get(key) for key in ("name", "long_name", "description", "predefined_type", "object_type", "storey_id")}}
                 seeds.append(seed)
@@ -666,18 +680,44 @@ class Regulation38Repository:
         return {**rows[0], "ifc_object_properties": properties}
 
     @staticmethod
+    def _suggested_fire_categories(obj: Mapping[str, Any]) -> list[str]:
+        """Return unconfirmed category hints; never make an assurance decision."""
+        entity = str(obj.get("ifc_entity") or "")
+        if entity in {"IfcDoor", "IfcWindow"}: return ["FIRE_DOORS_SHUTTERS"]
+        if entity in {"IfcWall", "IfcWallStandardCase", "IfcSlab", "IfcCurtainWall", "IfcColumn"}:
+            return ["FIRE_RESISTING_CONSTRUCTION"]
+        if entity in {"IfcAlarm", "IfcSensor"}: return ["DETECTION_ALARM"]
+        if entity == "IfcFireSuppressionTerminal": return ["FIRE_SUPPRESSION"]
+        if entity in {"IfcStair", "IfcRamp", "IfcRailing", "IfcSpace"}: return ["ESCAPE_ROUTES"]
+        return []
+
+    def fire_strategy_object(self, token: str, project_id: str, object_id: str) -> dict[str, Any]:
+        """Load one candidate's relevant property provenance on demand."""
+        if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You cannot access this project.", status_code=403)
+        rows = self._data_request("GET", f"ifc_objects?project_id=eq.{quote(project_id)}&id=eq.{quote(object_id)}"
+                                  "&select=id,ifc_global_id,ifc_entity,name,long_name,description,object_type,predefined_type,storey_id,building_storeys(id,name)&limit=1", token)
+        if not isinstance(rows, list) or not rows:
+            raise SupabaseAuthError("IFC object not found.", status_code=404)
+        properties = self._paged_data_request(
+            f"ifc_object_properties?ifc_object_id=eq.{quote(object_id)}&is_fire_relevant=eq.true"
+            "&select=property_set,property_name,property_value_text,source_scope&order=property_set,property_name", token)
+        return {**rows[0], "ifc_object_properties": properties}
+
+    @staticmethod
     def _fire_strategy_summary(reviews: list[Mapping[str, Any]]) -> dict[str, Any]:
         active = [r for r in reviews if not r.get("orphaned")]
         missing_category = sum(r.get("relevance") == "IN_SCOPE" and not (r.get("categories") or []) for r in active)
         missing_evidence = sum(r.get("relevance") == "IN_SCOPE" and not str(r.get("evidence_required") or "").strip()
                                and not r.get("no_evidence_required") for r in active)
-        unreviewed = sum(r.get("automatically_suggested") and r.get("relevance") == "NOT_ASSESSED" for r in active)
+        reviewed = sum(r.get("relevance") in {"IN_SCOPE", "OUT_OF_SCOPE"} or
+                       r.get("review_status") != "NOT_STARTED" for r in active)
         return {"total_suggestions": sum(bool(r.get("automatically_suggested")) for r in active),
-            "reviewed": len(active) - unreviewed, "in_scope": sum(r.get("relevance") == "IN_SCOPE" for r in active),
+            "reviewed": reviewed, "in_scope": sum(r.get("relevance") == "IN_SCOPE" for r in active),
             "out_of_scope": sum(r.get("relevance") == "OUT_OF_SCOPE" for r in active),
             "review_required": sum(r.get("relevance") == "REVIEW_REQUIRED" for r in active),
             "missing_category": missing_category, "missing_evidence": missing_evidence,
-            "complete": not (unreviewed or missing_category or missing_evidence)}
+            "complete": reviewed == len(active) and not (missing_category or missing_evidence)}
 
     def update_fire_strategy(self, token: str, project_id: str, review_ids: list[str], values: Mapping[str, Any], user_id: str) -> None:
         self.require_project_edit(token, project_id)
