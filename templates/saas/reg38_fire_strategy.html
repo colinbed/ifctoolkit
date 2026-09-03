@@ -1,5 +1,5 @@
 {% if not fire_strategy.ready %}
-<div class="spatial-warning" role="alert"><h3>Fire Strategy cannot start</h3><p>{{ fire_strategy.error }}</p><a class="button" href="{{ wizard_routes[4] }}">Back to Model Scan</a></div>
+<div class="spatial-warning" role="alert"><h3>Fire Strategy cannot start</h3><p>{{ fire_strategy.error }}</p><a class="button" href="{{ wizard_routes[5] }}">Back to Spatial Review</a></div>
 <div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[5] }}">Back</a><button class="button" disabled title="Complete Model Scan first">Next</button></div>
 {% else %}
 <div class="fire-summary" aria-label="Fire Strategy completion summary">
