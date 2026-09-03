@@ -34,6 +34,9 @@ def test_fire_property_creates_reasoned_unapproved_suggestion_without_duplicates
     assert "Pset_DoorCommon.FireRating" in first["reviews"][0]["suggestion_reason"]
     assert first["reviews"][0]["relevance"] == "NOT_ASSESSED"
     assert len([c for c in auth.calls if c[0]=="POST"]) == 1 and len(second["reviews"]) == 1
+    upsert = next(c for c in auth.calls if c[0] == "POST")
+    assert "on_conflict=project_id,model_id,ifc_global_id" in upsert[1]
+    assert upsert[2]["headers"]["Prefer"] == "resolution=merge-duplicates,return=minimal"
     object_queries = [url for method, url, _kwargs in auth.calls if method == "GET" and "ifc_objects?" in url]
     assert object_queries and all("ifc_object_properties(" not in url and "select=*" not in url for url in object_queries)
     property_queries = [url for method, url, _kwargs in auth.calls if method == "GET" and "ifc_object_properties?" in url]

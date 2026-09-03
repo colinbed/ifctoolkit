@@ -195,10 +195,12 @@ class Regulation38Repository:
     def _completion_data_request(self, method: str, path: str, token: str, reference: str,
                                  project_id: str, file_id: str, stage: str, **kwargs: Any) -> Any:
         """PostgREST request with completion-specific, safe diagnostics."""
+        caller_headers = kwargs.pop("headers", None) or {}
+        request_headers = {**self.auth._headers(token), **dict(caller_headers)}
+        request_timeout = kwargs.pop("timeout", self.auth.settings.request_timeout_seconds)
         try:
             response = requests.request(method, f"{self.auth.settings.project_url}/rest/v1/{path}",
-                                        headers=self.auth._headers(token),
-                                        timeout=self.auth.settings.request_timeout_seconds, **kwargs)
+                                        headers=request_headers, timeout=request_timeout, **kwargs)
         except requests.RequestException as exc:
             LOGGER.error("ifc_upload_complete_failed stage=%s reference=%s project_id=%s model_id=%s storage_bucket=%s database_http_status=unavailable response=%s",
                          stage, reference, project_id, file_id, self.bucket, type(exc).__name__)
@@ -637,7 +639,7 @@ class Regulation38Repository:
                 seeds.append(seed)
         if seeds:
             self._data_request("POST", "fire_strategy_reviews?on_conflict=project_id,model_id,ifc_global_id", token,
-                               json=seeds, headers={"Prefer": "resolution=ignore-duplicates,return=minimal"})
+                               json=seeds, headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
             existing = self._paged_data_request(
                 f"fire_strategy_reviews?project_id=eq.{pid}&model_id=eq.{mid}&select=*&order=id", token)
         object_by_guid = {str(obj.get("ifc_global_id")): obj for obj in objects}
