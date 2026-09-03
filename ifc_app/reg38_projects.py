@@ -666,6 +666,19 @@ class Regulation38Repository:
                 "can_edit": self.project_role(token, project_id) in {"OWNER", "ADMIN", "EDITOR"},
                 "categories": FIRE_STRATEGY_CATEGORIES}
 
+    def fire_strategy_object(self, token: str, project_id: str, object_id: str) -> dict[str, Any]:
+        """Load one candidate's relevant property provenance on demand."""
+        if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You cannot access this project.", status_code=403)
+        rows = self._data_request("GET", f"ifc_objects?project_id=eq.{quote(project_id)}&id=eq.{quote(object_id)}"
+                                  "&select=id,ifc_global_id,ifc_entity,name,long_name,description,object_type,predefined_type,storey_id,building_storeys(id,name)&limit=1", token)
+        if not isinstance(rows, list) or not rows:
+            raise SupabaseAuthError("IFC object not found.", status_code=404)
+        properties = self._paged_data_request(
+            f"ifc_object_properties?ifc_object_id=eq.{quote(object_id)}&is_fire_relevant=eq.true"
+            "&select=property_set,property_name,property_value_text,source_scope&order=property_set,property_name", token)
+        return {**rows[0], "ifc_object_properties": properties}
+
     @staticmethod
     def _suggested_fire_categories(obj: Mapping[str, Any]) -> list[str]:
         """Return unconfirmed category hints; never make an assurance decision."""
