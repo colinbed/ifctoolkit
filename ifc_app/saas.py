@@ -598,6 +598,19 @@ def spatial_storey_plan(request: Request, project_id: str, storey_id: str):
         return JSONResponse({"detail": exc.public_message}, status_code=exc.status_code)
 
 
+@router.get("/api/firetrace/projects/{project_id}/fire-strategy/objects/{object_id}", response_class=JSONResponse)
+def fire_strategy_object(request: Request, project_id: str, object_id: str):
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
+        return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        return JSONResponse(Regulation38Repository(get_auth_service()).fire_strategy_object(
+            token, project_id, object_id))
+    except SupabaseAuthError as exc:
+        return JSONResponse({"detail": exc.public_message}, status_code=exc.status_code)
+
+
 @router.get("/app/firetrace/projects/{project_id}", response_class=HTMLResponse)
 def firetrace_project_dashboard(request: Request, project_id: str):
     user = _require_firetrace(request)

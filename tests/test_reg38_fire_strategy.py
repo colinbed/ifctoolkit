@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 from ifc_app.reg38_projects import Regulation38Repository
 
@@ -16,6 +17,8 @@ class FireAuth:
         if "project_members?" in url: return [{"role":"EDITOR"}]
         if "ifc_files?" in url: return [{"id":MODEL,"status":"PROCESSED"}]
         if "ifc_processing_jobs?" in url: return [{"status":"COMPLETED"}]
+        if "ifc_object_properties?" in url: return [{"ifc_object_id":"object","property_set":"Pset_DoorCommon",
+            "property_name":"FireRating","property_value_text":"FD60","source_scope":"OCCURRENCE"}]
         if "ifc_objects?" in url: return [{"id":"object","ifc_global_id":"door-guid","ifc_entity":"IfcDoor","name":"Door 1",
             "long_name":None,"description":None,"storey_id":"level","building_storeys":{"id":"level","name":"Level 1"},
             "ifc_object_properties":[{"property_set":"Pset_DoorCommon","property_name":"FireRating","property_value_text":"FD60"}]}]
@@ -31,6 +34,13 @@ def test_fire_property_creates_reasoned_unapproved_suggestion_without_duplicates
     assert "Pset_DoorCommon.FireRating" in first["reviews"][0]["suggestion_reason"]
     assert first["reviews"][0]["relevance"] == "NOT_ASSESSED"
     assert len([c for c in auth.calls if c[0]=="POST"]) == 1 and len(second["reviews"]) == 1
+    upsert = next(c for c in auth.calls if c[0] == "POST")
+    assert "on_conflict=project_id,model_id,ifc_global_id" in upsert[1]
+    assert upsert[2]["headers"]["Prefer"] == "resolution=merge-duplicates,return=minimal"
+    object_queries = [url for method, url, _kwargs in auth.calls if method == "GET" and "ifc_objects?" in url]
+    assert object_queries and all("ifc_object_properties(" not in url and "select=*" not in url for url in object_queries)
+    property_queries = [url for method, url, _kwargs in auth.calls if method == "GET" and "ifc_object_properties?" in url]
+    assert property_queries and all("is_fire_relevant=eq.true" in url and "limit=500" in url for url in property_queries)
 
 
 def test_production_schema_without_is_current_resolves_current_model_and_loads_geometry():
@@ -58,6 +68,46 @@ def test_production_schema_without_is_current_resolves_current_model_and_loads_g
     assert result["model"]["id"] == MODEL
     assert result["spaces"][0]["source_geometry"]["type"] == "Polygon"
     assert all("is_current" not in call[1] for call in auth.calls)
+
+
+def test_production_scale_load_is_paged_and_only_reads_materialised_fire_properties():
+    """A 2,300-object/100,000-property model returns only its 350 candidates."""
+    class ProductionScale(FireAuth):
+        candidates = [{"id": f"candidate-{i}", "ifc_global_id": f"guid-{i}", "ifc_entity": "IfcDoor",
+                       "name": f"Door {i}", "storey_id": None} for i in range(300)]
+        generic = [{"id": f"generic-{i}", "ifc_global_id": f"generic-guid-{i}", "ifc_entity": "IfcBuildingElementProxy",
+                    "name": f"Equipment {i}", "storey_id": None} for i in range(50)]
+        fire_properties = [{"ifc_object_id": f"generic-{i}", "property_set": "CustomFireData",
+                            "property_name": "FireResistanceRating", "property_value_text": "60 min",
+                            "source_scope": "OCCURRENCE"} for i in range(50)]
+
+        def _request_json(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            query = parse_qs(urlparse(url).query)
+            offset, limit = int(query.get("offset", [0])[0]), int(query.get("limit", [500])[0])
+            if "project_members?" in url: return [{"role": "EDITOR"}]
+            if "ifc_files?" in url: return [{"id": MODEL, "status": "PROCESSED"}]
+            if "ifc_processing_jobs?" in url: return [{"status": "COMPLETED"}]
+            if "ifc_object_properties?" in url:
+                assert "is_fire_relevant=eq.true" in url
+                return self.fire_properties[offset:offset + limit]
+            if "ifc_objects?" in url:
+                if "ifc_entity=in." in url: return self.candidates[offset:offset + limit]
+                ids = query.get("id", [""])[0].removeprefix("in.(").removesuffix(")").split(",")
+                return [row for row in self.generic if row["id"] in ids]
+            if "fire_strategy_reviews?" in url and method == "GET": return self.records[offset:offset + limit]
+            if method == "POST":
+                self.records.extend([{**row, "id": f"review-{len(self.records) + i}", "relevance": "NOT_ASSESSED",
+                                      "categories": [], "review_status": "NOT_STARTED"}
+                                     for i, row in enumerate(kwargs["json"])]); return []
+            return []
+
+    auth = ProductionScale()
+    result = Regulation38Repository(auth).fire_strategy("token", PROJECT, "user")
+
+    assert result["ready"] and len(result["objects"]) == 350 and len(result["reviews"]) == 350
+    assert all("ifc_object_properties(" not in url for method, url, _kwargs in auth.calls if method == "GET")
+    assert max(len(kwargs.get("json", [])) for method, _url, kwargs in auth.calls if method == "POST") == 350
 
 
 def test_ifc_file_select_contract_matches_migrated_production_schema():
