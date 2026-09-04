@@ -97,13 +97,23 @@ def test_storey_plan_is_lightweight_and_scoped_to_project_and_storey():
             if "project_spaces?" in url:
                 return [{"id": SPACE_1, "storey_id": "storey", "space_number": "01-101",
                          "name": "Breakout", "source_geometry": {"type": "Polygon", "coordinates": [[0, 0], [5, 0], [5, 4], [0, 0]]}}]
+            if "ifc_object_plan_geometry?" in url:
+                return [{"ifc_object_id": "wall", "geometry_type": "Polygon",
+                         "geometry": {"type": "Polygon", "coordinates": [[0, 0], [5, 0], [5, .2], [0, 0]]},
+                         "centroid_x": 2.5, "centroid_y": .1,
+                         "ifc_objects": {"ifc_global_id": "wall-guid", "ifc_entity": "IfcWallStandardCase", "name": "Wall"}}]
             return []
     auth = PlanAuth()
     plan = Regulation38Repository(auth).spatial_storey_plan("token", PROJECT, "storey")
     assert plan["geometry_status"] == "available" and plan["spaces"][0]["id"] == SPACE_1
+    assert plan["objects"][0]["id"] == "wall"
+    assert plan["objects"][0]["ifc_entity"] == "IfcWallStandardCase"
+    assert plan["objects"][0]["geometry"]["type"] == "Polygon"
     request_url = next(url for method, url, _ in auth.calls if "project_spaces?" in url)
     assert f"project_id=eq.{PROJECT}" in request_url and "storey_id=eq.storey" in request_url
     assert "source_geometry" in request_url and "ifc_objects" not in request_url
+    object_url = next(url for method, url, _ in auth.calls if "ifc_object_plan_geometry?" in url)
+    assert "project_id=eq." in object_url and "storey_id=eq.storey" in object_url
 
 
 def test_storey_plan_reports_explicit_missing_geometry_state():

@@ -147,12 +147,18 @@ class SupabaseAuthService:
         requested_user_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
+        # Callers may add transport-specific headers (for example PostgREST's
+        # ``Prefer`` upsert directive).  Remove explicitly supplied arguments
+        # from kwargs before calling requests so each keyword is passed once.
+        caller_headers = kwargs.pop("headers", None) or {}
+        request_headers = {**self._headers(access_token), **dict(caller_headers)}
+        request_timeout = kwargs.pop("timeout", self.settings.request_timeout_seconds)
         try:
             response = requests.request(
                 method,
                 url,
-                headers=self._headers(access_token),
-                timeout=self.settings.request_timeout_seconds,
+                headers=request_headers,
+                timeout=request_timeout,
                 **kwargs,
             )
         except requests.RequestException as exc:
