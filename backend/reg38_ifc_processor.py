@@ -32,6 +32,10 @@ ENTITY_TYPES = (
     "IfcBuildingElementProxy", "IfcDamper", "IfcFireSuppressionTerminal", "IfcAlarm", "IfcSensor",
     "IfcLightFixture", "IfcFlowTerminal", "IfcFlowController",
 )
+PLAN_GEOMETRY_ENTITIES = {
+    "IfcWall", "IfcWallStandardCase", "IfcDoor", "IfcColumn", "IfcCurtainWall", "IfcSlab",
+    "IfcStair", "IfcRamp", "IfcWindow", "IfcBeam",
+}
 STANDARD_FIRE = {
     ("pset_doorcommon", "firerating"): "FIRE_DOOR_RATING",
     ("pset_doorcommon", "fireexit"): "FIRE_EXIT",
@@ -54,7 +58,7 @@ class ScanResult:
         name: [] for name in ("buildings", "building_storeys", "ifc_objects", "ifc_object_properties",
                               "ifc_object_relationships", "project_spaces", "project_zones",
                               "project_zone_members", "project_grids", "project_grid_axes",
-                              "fire_requirements", "model_scan_warnings")
+                              "fire_requirements", "model_scan_warnings", "ifc_object_plan_geometry")
     })
     statistics: dict[str, int] = field(default_factory=dict)
 
@@ -168,6 +172,24 @@ def _polygon_centroid(ring: list[list[float]]) -> tuple[float, float] | None:
     if abs(area2) < 1e-12:
         return None
     return cx / (3 * area2), cy / (3 * area2)
+
+
+def _simplify_ring(ring: list[list[float]], tolerance: float = 1e-5) -> list[list[float]]:
+    """Remove duplicate and collinear mesh vertices without changing topology."""
+    points: list[list[float]] = []
+    for point in ring[:-1] if ring and ring[0] == ring[-1] else ring:
+        rounded = [round(float(point[0]), 6), round(float(point[1]), 6)]
+        if not points or math.dist(points[-1], rounded) > tolerance:
+            points.append(rounded)
+    changed = True
+    while changed and len(points) > 3:
+        changed = False
+        for index in range(len(points)):
+            a, b, c = points[index - 1], points[index], points[(index + 1) % len(points)]
+            cross = abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
+            if cross <= tolerance:
+                points.pop(index); changed = True; break
+    return points + [points[0]] if len(points) >= 3 else ring
 
 
 def _curve_points(curve: Any) -> list[list[float]]:
@@ -375,7 +397,7 @@ def _space_geometry(obj: Any, storey: Any) -> dict[str, Any]:
     offset = _centroid(storey) or {"x": 0.0, "y": 0.0, "z": 0.0}
     rings = [[[round(vertices[index][0] - offset["x"], 6), round(vertices[index][1] - offset["y"], 6)]
               for index in loop] for loop in loops]
-    ring = max(rings, key=lambda candidate: abs(_signed_area(candidate)))
+    ring = _simplify_ring(max(rings, key=lambda candidate: abs(_signed_area(candidate))))
     centroid = _polygon_centroid(ring)
     if centroid is None:
         return {"type": "Unavailable", "reason": "INVALID_POLYGON", "representation_types": representations}
@@ -385,6 +407,28 @@ def _space_geometry(obj: Any, storey: Any) -> dict[str, Any]:
             "geometry_method": "DIRECT_REPRESENTATION", "source": "IFC", "confidence": "HIGH",
             "extraction_method": "IFCOPENSHELL_LOWEST_HORIZONTAL_MESH_BOUNDARY",
             "representation_types": representations}
+
+
+def _object_plan_geometry(obj: Any, storey: Any) -> dict[str, Any] | None:
+    """Return a simplified storey-local plan footprint or placement fallback."""
+    geometry = _space_geometry(obj, storey)
+    if geometry.get("type") == "Polygon" and geometry.get("coordinates"):
+        xs = [point[0] for point in geometry["coordinates"]]
+        ys = [point[1] for point in geometry["coordinates"]]
+        geometry["plan_dimensions"] = {"width": round(max(xs) - min(xs), 6),
+                                       "depth": round(max(ys) - min(ys), 6)}
+        if obj.is_a("IfcDoor") or obj.is_a("IfcWindow"):
+            geometry["opening_width"] = _value(getattr(obj, "OverallWidth", None))
+        return geometry
+    world = _centroid(obj)
+    if not world:
+        return None
+    offset = _centroid(storey) or {"x": 0.0, "y": 0.0, "z": 0.0}
+    point = [round(world["x"] - offset["x"], 6), round(world["y"] - offset["y"], 6)]
+    return {"type": "Point", "coordinates": point, "centroid": {"x": point[0], "y": point[1]},
+            "coordinate_system": "storey-local", "world_offset": offset,
+            "geometry_method": "OBJECT_PLACEMENT", "source": "IFC", "confidence": "LOW",
+            "fallback_reason": geometry.get("reason")}
 
 
 def _signed_area(ring: list[list[float]]) -> float:
@@ -488,6 +532,17 @@ class Regulation38IfcProcessor:
                 "object_type": getattr(obj, "ObjectType", None), "predefined_type": _predefined(obj), "tag": getattr(obj, "Tag", None),
                 "type_global_id": getattr(type_obj, "GlobalId", None), "source_data": {"ifc_file_id": ifc_file_id, "step_id": obj.id()},
                 "geometry_metadata": {"centroid": centroid, "representation": bool(getattr(obj, "Representation", None))}})
+            if storey and obj.is_a() in PLAN_GEOMETRY_ENTITIES:
+                plan_geometry = _object_plan_geometry(obj, storey)
+                if plan_geometry:
+                    plan_centroid = plan_geometry.get("centroid") or {}
+                    result.tables["ifc_object_plan_geometry"].append({
+                        "id": _id(ifc_file_id, "plan-geometry", obj.GlobalId), "project_id": project_id,
+                        "ifc_file_id": ifc_file_id, "ifc_object_id": oid,
+                        "storey_id": storey_ids.get(storey.GlobalId), "geometry_type": plan_geometry["type"],
+                        "geometry": plan_geometry, "centroid_x": plan_centroid.get("x"),
+                        "centroid_y": plan_centroid.get("y"),
+                        "extraction_method": plan_geometry.get("geometry_method", "DIRECT_REPRESENTATION")})
             rows = _flatten_psets(obj, "OCCURRENCE")
             for name in ("Name", "LongName", "Description", "ObjectType", "PredefinedType", "Tag"):
                 if hasattr(obj, name):
@@ -651,11 +706,14 @@ class Regulation38IfcProcessor:
         fire_objects = {r["ifc_object_id"] for r in fires}
         count = lambda kind: sum(o["ifc_entity"] == kind for o in objects)
         space_geometries = [row.get("source_geometry") or {} for row in result.tables["project_spaces"]]
+        plan_rows = result.tables["ifc_object_plan_geometry"]
+        plan_entities = {row["id"]: row["ifc_entity"] for row in objects}
         geometry_failures: dict[str, int] = {}
         for geometry in space_geometries:
             if geometry.get("type") != "Polygon":
                 reason = geometry.get("reason", "UNSUPPORTED_REPRESENTATION")
                 geometry_failures[reason] = geometry_failures.get(reason, 0) + 1
+        plan_candidate_count = sum(bool(o["ifc_entity"] in PLAN_GEOMETRY_ENTITIES and o.get("storey_id")) for o in objects)
         result.statistics.update({"buildings": count("IfcBuilding"), "storeys": count("IfcBuildingStorey"),
             "spaces": count("IfcSpace"), "ifc_zones": count("IfcZone"), "ifc_spatial_zones": count("IfcSpatialZone"),
             "fire_safety_spatial_zones": sum(o["ifc_entity"] == "IfcSpatialZone" and (o.get("predefined_type") or "").upper() == "FIRESAFETY" for o in objects),
@@ -666,6 +724,12 @@ class Regulation38IfcProcessor:
             "conflict_count": sum(w["warning_code"] == "FIRE_RATING_CONFLICT" for w in result.tables["model_scan_warnings"]),
             "unnamed_spaces": sum(w["warning_code"] == "SPACE_MISSING_NAME" for w in result.tables["model_scan_warnings"]),
             "objects_total": len(objects), "properties_total": len(result.tables["ifc_object_properties"]),
+            "plan_objects_total": plan_candidate_count,
+            "plan_objects_with_geometry": len(plan_rows),
+            "walls_with_plan_geometry": sum(plan_entities.get(row["ifc_object_id"]) in {"IfcWall", "IfcWallStandardCase"} for row in plan_rows),
+            "doors_with_plan_geometry": sum(plan_entities.get(row["ifc_object_id"]) == "IfcDoor" for row in plan_rows),
+            "columns_with_plan_geometry": sum(plan_entities.get(row["ifc_object_id"]) == "IfcColumn" for row in plan_rows),
+            "objects_geometry_failed": plan_candidate_count - len(plan_rows),
             "spaces_with_plan_geometry": sum(g.get("type") == "Polygon" and bool(g.get("coordinates")) for g in space_geometries),
             "spaces_without_plan_geometry": sum(g.get("type") != "Polygon" for g in space_geometries),
             "spaces_direct_geometry": sum(g.get("geometry_method") == "DIRECT_REPRESENTATION" for g in space_geometries),
