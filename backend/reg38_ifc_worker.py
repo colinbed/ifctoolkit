@@ -84,7 +84,7 @@ class SupabaseBatchSink:
 
     def insert_result(self, tables: dict[str, list[dict[str, Any]]]) -> None:
         order = ("buildings", "building_storeys", "ifc_objects", "ifc_object_properties",
-                 "ifc_object_relationships", "project_spaces", "project_zones", "project_zone_members",
+                 "ifc_object_plan_geometry", "ifc_object_relationships", "project_spaces", "project_zones", "project_zone_members",
                  "project_grids", "project_grid_axes", "fire_requirements", "model_scan_warnings")
         # Every table has an intentional retry identity. Most extractor rows use
         # deterministic primary keys; the exceptions use their declared logical
@@ -92,6 +92,7 @@ class SupabaseBatchSink:
         conflict_targets = {
             "buildings": "id", "building_storeys": "id",
             "ifc_objects": "ifc_file_id,ifc_global_id", "ifc_object_properties": "id",
+            "ifc_object_plan_geometry": "ifc_file_id,ifc_object_id",
             "ifc_object_relationships": "id", "project_spaces": "id", "project_zones": "id",
             "project_zone_members": "zone_id,space_id", "project_grids": "id",
             "project_grid_axes": "id",
@@ -164,6 +165,13 @@ def process_job(sink: SupabaseBatchSink, job: dict[str, Any]) -> None:
                  spaces_centroid_only=result.statistics.get("spaces_centroid_only", 0),
                  spaces_geometry_failed=result.statistics.get("spaces_without_plan_geometry", 0),
                  failure_reasons=result.statistics.get("space_geometry_failure_reasons", {}))
+            _log("plan_object_geometry_summary", job_id=job_id,
+                 plan_objects_total=result.statistics.get("plan_objects_total", 0),
+                 plan_objects_with_geometry=result.statistics.get("plan_objects_with_geometry", 0),
+                 walls_with_plan_geometry=result.statistics.get("walls_with_plan_geometry", 0),
+                 doors_with_plan_geometry=result.statistics.get("doors_with_plan_geometry", 0),
+                 columns_with_plan_geometry=result.statistics.get("columns_with_plan_geometry", 0),
+                 objects_geometry_failed=result.statistics.get("objects_geometry_failed", 0))
             sink.update_job(job, current_step="WRITING_DATABASE", progress_percent=96, statistics=result.statistics)
             sink.insert_result(result.tables)
             _log("warnings_generated", job_id=job_id, count=len(result.tables["model_scan_warnings"]))

@@ -8,7 +8,9 @@
  const label=r=>{const o=object(r),v=original(r);return o.ifc_entity==="IfcSpace"?[v.name,v.long_name].filter(Boolean).join(" — "):(o.name||o.object_type||r.entity_type);};
  const marker=o=>{const metadata=o.geometry_metadata||{},point=metadata.centroid||metadata.center;return Array.isArray(point)&&point.length>=2?[Number(point[0]),Number(point[1])]:null;};
  const row=(key,value)=>`<div class="source-row"><span>${key}</span><strong>${esc(value||"—")}</strong></div>`;
- const viewer=new window.FiretracePlanViewer(svg,{gridToggle:document.getElementById("fire-grid")});
+ const selectPlanObject=planObject=>{const review=reviews.find(r=>object(r).id===planObject.id||r.ifc_global_id===planObject.ifc_global_id);if(review)tree.querySelector(`[data-review="${review.id}"]`)?.click();};
+ const viewer=new window.FiretracePlanViewer(svg,{gridToggle:document.getElementById("fire-grid"),showObjects:true,onSelect:selectPlanObject});
+ const updatePlanNote=objects=>{const selectedObject=objects.find(item=>item.id===object(active||{}).id||item.ifc_global_id===active?.ifc_global_id);document.getElementById('fire-plan-note').hidden=!active||(selectedObject&&selectedObject.geometry?.type!=="Point");};
  async function renderDetails(r,bulk=false){
   active=r;let o=object(r),v=original(r);
   if(!bulk&&!o.ifc_object_properties&&o.id){details.innerHTML='<p>Loading fire-property details…</p>';try{const response=await fetch(`/api/firetrace/projects/${config.projectId}/fire-strategy/objects/${o.id}`);if(response.ok)Object.assign(o,await response.json());}catch(_error){/* Optional detail failure does not block review. */}}
@@ -25,9 +27,9 @@
  }
  async function loadPlan(){
   if(!storey)return;document.getElementById('fire-plan-title').textContent=object(active||reviews.find(r=>object(r).storey_id===storey)||{}).building_storeys?.name||'Selected storey';
-  if(planCache.has(storey)){planRows=planCache.get(storey);viewer.setRows(planRows,object(active||{}).id,marker(object(active||{})));return;}
+  if(planCache.has(storey)){const plan=planCache.get(storey);planRows=plan.spaces;updatePlanNote(plan.objects);viewer.setPlan(plan.spaces,plan.objects,object(active||{}).id,marker(object(active||{})));return;}
   svg.innerHTML='<text x="400" y="280" text-anchor="middle">Loading stored plan geometry…</text>';
-  try{const response=await fetch(`/api/firetrace/projects/${config.projectId}/spatial/storeys/${storey}`,{headers:{Accept:'application/json'}});if(!response.ok)throw new Error('Plan unavailable');const payload=await response.json();planRows=payload.spaces||[];planCache.set(storey,planRows);viewer.setRows(planRows,object(active||{}).id,marker(object(active||{})));}catch(_error){planRows=[];viewer.setRows([]);}
+  try{const response=await fetch(`/api/firetrace/projects/${config.projectId}/spatial/storeys/${storey}`,{headers:{Accept:'application/json'}});if(!response.ok)throw new Error('Plan unavailable');const payload=await response.json(),plan={spaces:payload.spaces||[],objects:payload.objects||[]};planRows=plan.spaces;plan.objects.forEach(item=>{const review=reviews.find(r=>object(r).id===item.id||r.ifc_global_id===item.ifc_global_id);item.review_state=review?.relevance;});planCache.set(storey,plan);updatePlanNote(plan.objects);viewer.setPlan(plan.spaces,plan.objects,object(active||{}).id,marker(object(active||{})));}catch(_error){planRows=[];viewer.setPlan([],[]);}
  }
  document.querySelectorAll('[data-fire-fit]').forEach(button=>button.onclick=()=>viewer.fit(button.dataset.fireFit));
  document.querySelectorAll('[data-fire-zoom]').forEach(button=>button.onclick=()=>viewer.zoom(button.dataset.fireZoom==='in'?.8:1.25));

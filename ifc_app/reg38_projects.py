@@ -559,8 +559,17 @@ class Regulation38Repository:
                                   "&select=id,storey_id,source_ifc_object_id,ifc_global_id,space_number,name,description,"
                                   "centroid_x,centroid_y,source_geometry,working_geometry&order=space_number", token)
         spaces = rows if isinstance(rows, list) else []
-        return {"project_id": project_id, "storey_id": storey_id, "spaces": spaces,
-                "geometry_status": "available" if any((s.get("source_geometry") or {}).get("coordinates") for s in spaces) else "unavailable"}
+        plan_rows = self._paged_data_request(
+            f"ifc_object_plan_geometry?project_id=eq.{quote(project_id)}&storey_id=eq.{quote(storey_id)}"
+            "&select=id,ifc_object_id,geometry_type,geometry,centroid_x,centroid_y,"
+            "ifc_objects!inner(ifc_global_id,ifc_entity,name)&order=geometry_type,ifc_object_id", token)
+        plan_objects = [{"id": row.get("ifc_object_id"), **dict(row.get("ifc_objects") or {}),
+                         "geometry": row.get("geometry"),
+                         "centroid": {"x": row.get("centroid_x"), "y": row.get("centroid_y")}}
+                        for row in plan_rows]
+        has_geometry = any((s.get("working_geometry") or s.get("source_geometry") or {}).get("coordinates") for s in spaces)
+        return {"project_id": project_id, "storey_id": storey_id, "spaces": spaces, "objects": plan_objects,
+                "geometry_status": "available" if has_geometry or plan_objects else "unavailable"}
 
     def fire_strategy(self, token: str, project_id: str, user_id: str = "") -> dict[str, Any]:
         """Return persisted scan data and idempotently seed review suggestions."""
@@ -665,6 +674,31 @@ class Regulation38Repository:
                 "reviews": reviews, "summary": summary,
                 "can_edit": self.project_role(token, project_id) in {"OWNER", "ADMIN", "EDITOR"},
                 "categories": FIRE_STRATEGY_CATEGORIES}
+
+    def fire_strategy_object(self, token: str, project_id: str, object_id: str) -> dict[str, Any]:
+        """Load one candidate's relevant property provenance on demand."""
+        if self.project_role(token, project_id) is None and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You cannot access this project.", status_code=403)
+        rows = self._data_request("GET", f"ifc_objects?project_id=eq.{quote(project_id)}&id=eq.{quote(object_id)}"
+                                  "&select=id,ifc_global_id,ifc_entity,name,long_name,description,object_type,predefined_type,storey_id,building_storeys(id,name)&limit=1", token)
+        if not isinstance(rows, list) or not rows:
+            raise SupabaseAuthError("IFC object not found.", status_code=404)
+        properties = self._paged_data_request(
+            f"ifc_object_properties?ifc_object_id=eq.{quote(object_id)}&is_fire_relevant=eq.true"
+            "&select=property_set,property_name,property_value_text,source_scope&order=property_set,property_name", token)
+        return {**rows[0], "ifc_object_properties": properties}
+
+    @staticmethod
+    def _suggested_fire_categories(obj: Mapping[str, Any]) -> list[str]:
+        """Return unconfirmed category hints; never make an assurance decision."""
+        entity = str(obj.get("ifc_entity") or "")
+        if entity in {"IfcDoor", "IfcWindow"}: return ["FIRE_DOORS_SHUTTERS"]
+        if entity in {"IfcWall", "IfcWallStandardCase", "IfcSlab", "IfcCurtainWall", "IfcColumn"}:
+            return ["FIRE_RESISTING_CONSTRUCTION"]
+        if entity in {"IfcAlarm", "IfcSensor"}: return ["DETECTION_ALARM"]
+        if entity == "IfcFireSuppressionTerminal": return ["FIRE_SUPPRESSION"]
+        if entity in {"IfcStair", "IfcRamp", "IfcRailing", "IfcSpace"}: return ["ESCAPE_ROUTES"]
+        return []
 
     def fire_strategy_object(self, token: str, project_id: str, object_id: str) -> dict[str, Any]:
         """Load one candidate's relevant property provenance on demand."""

@@ -165,6 +165,10 @@ def test_fire_workspace_uses_shared_plan_viewer_and_accessible_collapsible_store
         assert control in script
     assert "source_ifc_object_id === id" in viewer
     assert 'target === "selection"' in viewer and 'target === "storey"' in viewer
+    assert "showObjects:true" in script and "viewer.setPlan(plan.spaces,plan.objects" in script
+    assert 'row.geometry?.type==="LineString"' in viewer and '"plan-object":"plan-space"' in viewer
+    assert "this.onSelect&&isObject" in viewer and "selectPlanObject" in script
+    assert "this.selectionPoint" in viewer and "plan-selection-marker" in viewer
 
 
 def test_category_options_are_associated_flex_rows():
