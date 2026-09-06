@@ -5,8 +5,8 @@
   const spaces = byId(data.spaces), zones = byId(data.zones);
   const members = data.members.reduce((all, member) => ((all[member.zone_id] ||= []).push(member), all), {});
   const tree = document.getElementById("structure-tree"), details = document.getElementById("spatial-details");
-  const svg = document.getElementById("storey-plan"), ns = "http://www.w3.org/2000/svg";
-  let selectedStorey = null, selectedSpace = null, planRows = [], viewBox = [0, 0, 800, 560], planRequest = 0;
+  const svg = document.getElementById("storey-plan");
+  let selectedStorey = null, selectedSpace = null, planRows = [], planRequest = 0;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const source = (space) => space.ifc_objects || {};
   const storey = (space) => space.building_storeys || {id: space.storey_id, name: "Unknown storey"};
@@ -58,7 +58,11 @@
     tree.querySelectorAll("[data-zone]").forEach((el) => el.onclick = () => selectZone(el.dataset.zone));
     tree.querySelectorAll("[data-storey]").forEach((el) => el.onclick = () => { selectedStorey = el.dataset.storey; selectedSpace = null; loadPlan(); });
   }
-  const geometry = (space) => space.source_geometry?.coordinates || space.source_geometry?.footprint;
+  const planViewer = new window.FiretracePlanViewer(svg, {
+    gridToggle: document.getElementById("grid-toggle"),
+    onSelect: (space) => selectSpace(space.id),
+  });
+  const geometry = (space) => planViewer.geometry(space);
   const emptyMessage = () => {
     const unavailable = selectedSpace && spaces[selectedSpace]?.source_geometry;
     const reason = unavailable?.reason;
@@ -67,36 +71,14 @@
     if (reason) return "Space detected, but FireTrace could not derive a closed plan footprint from its IFC geometry.";
     return "Plan geometry has not been generated. Re-run Model Scan to backfill this space.";
   };
-  function bounds(rows) {
-    const pts = rows.flatMap((row) => geometry(row) || []);
-    if (!pts.length) return null;
-    const xs = pts.map((p) => Number(p[0])), ys = pts.map((p) => Number(p[1]));
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  }
-  function fit(rows, padding = .12) {
-    const b = bounds(rows); if (!b) return;
-    const w = Math.max(b[2] - b[0], 1), h = Math.max(b[3] - b[1], 1), pad = Math.max(w, h) * padding;
-    viewBox = [b[0] - pad, -(b[3] + pad), w + pad * 2, h + pad * 2];
-    svg.setAttribute("viewBox", viewBox.join(" "));
-  }
   function drawPlan(fitTarget = null) {
-    svg.innerHTML = "";
-    if (!planRows.some((row) => geometry(row))) {
+    if (!planRows.some((row) => geometry(row).length)) {
       svg.setAttribute("viewBox", "0 0 800 560");
       svg.innerHTML = `<g class="preview-empty"><text x="400" y="260" text-anchor="middle" font-weight="700">Preview unavailable</text><text x="400" y="290" text-anchor="middle">${esc(emptyMessage())}</text></g>`;
       return;
     }
-    planRows.forEach((space) => {
-      const points = geometry(space); if (!points?.length) return;
-      const group = document.createElementNS(ns, "g");
-      group.setAttribute("class", `plan-space${space.id === selectedSpace ? " selected" : ""}`);
-      const polygon = document.createElementNS(ns, "polygon"); polygon.setAttribute("points", points.map((p) => `${p[0]},${-Number(p[1])}`).join(" "));
-      const b = bounds([space]), label = document.createElementNS(ns, "text");
-      label.setAttribute("x", (b[0] + b[2]) / 2); label.setAttribute("y", -(b[1] + b[3]) / 2); label.setAttribute("text-anchor", "middle"); label.textContent = space.space_number || space.name;
-      group.append(polygon, label); group.onclick = () => selectSpace(space.id); svg.append(group);
-    });
-    if (fitTarget === "storey" || !viewBox) fit(planRows);
-    else if (fitTarget === "room") fit(planRows.filter((row) => row.id === selectedSpace), .3);
+    if (fitTarget === "storey" || !planViewer.viewBox) planViewer.setRows(planRows, selectedSpace);
+    else { planViewer.rows=planRows;planViewer.selectedId=selectedSpace;fitTarget === "room" ? planViewer.fit("selection") : planViewer.render(); }
   }
   async function loadPlan() {
     const request = ++planRequest;
@@ -106,21 +88,20 @@
       const response = await fetch(`/api/firetrace/projects/${config.projectId}/spatial/storeys/${selectedStorey}`, {headers:{Accept:"application/json"}});
       if (!response.ok) throw new Error("Plan unavailable");
       const payload = await response.json(); if (request !== planRequest) return;
-      planRows = payload.spaces || []; viewBox = null; drawPlan(selectedSpace ? "room" : "storey");
+      planRows = payload.spaces || []; planViewer.viewBox = null; drawPlan(selectedSpace ? "room" : "storey");
     } catch (_) {
       if (request === planRequest) { planRows = []; drawPlan(); }
     }
   }
   document.querySelectorAll("[data-plan-action]").forEach((button) => button.onclick = () => {
     const action = button.dataset.planAction;
-    if (action === "room" || action === "storey") return drawPlan(action);
-    if (action === "reset") return drawPlan(selectedSpace ? "room" : "storey");
-    const factor = action === "in" ? .8 : 1.25, cx = viewBox[0] + viewBox[2]/2, cy = viewBox[1] + viewBox[3]/2;
-    viewBox[2] *= factor; viewBox[3] *= factor; viewBox[0] = cx-viewBox[2]/2; viewBox[1] = cy-viewBox[3]/2; svg.setAttribute("viewBox", viewBox.join(" "));
+    if (action === "room") return planViewer.fit("selection");
+    if (action === "storey") return planViewer.fit("storey");
+    if (action === "reset") return planViewer.reset();
+    planViewer.zoom(action === "in" ? .8 : 1.25);
   });
   renderTree();
   document.getElementById("spatial-search").oninput = (event) => renderTree(event.target.value);
-  document.getElementById("grid-toggle").onchange = () => drawPlan();
   document.getElementById("new-zone")?.addEventListener("click", newZone);
   const requested = new URLSearchParams(location.search).get("selected"); if (requested?.startsWith("space:")) selectSpace(requested.slice(6)); else if (requested?.startsWith("zone:")) selectZone(requested.slice(5));
 })();
