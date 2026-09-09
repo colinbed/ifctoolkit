@@ -43,6 +43,7 @@ def make_fixture(path: Path):
     common = ifcopenshell.api.run("pset.add_pset", model, product=door, name="Pset_DoorCommon")
     ifcopenshell.api.run("pset.edit_pset", model, pset=common, properties={"FireRating": "FD60S"})
     door_type = create("IfcDoorType", "Door type")
+    door_type.OperationType = "SINGLE_SWING_LEFT"
     custom = ifcopenshell.api.run("pset.add_pset", model, product=door_type, name="ManufacturerData")
     ifcopenshell.api.run("pset.edit_pset", model, pset=custom, properties={"Fire Resistance": "EI60"})
     ifcopenshell.api.run("type.assign_type", model, related_objects=[door], relating_type=door_type)
@@ -127,6 +128,31 @@ def test_relevant_objects_have_simplified_storey_local_plan_footprints(tmp_path)
     assert result.statistics["walls_with_plan_geometry"] == 1
     assert result.statistics["doors_with_plan_geometry"] == 1
     assert result.statistics["columns_with_plan_geometry"] == 1
+    door = geometry[objects[ids["door"]]["id"]]["geometry"]
+    assert door["door_symbol"]["door_operation"] == "SINGLE_SWING_LEFT"
+    assert door["door_symbol"]["swing_end_angle"] - door["door_symbol"]["swing_start_angle"] == 90
+
+
+def test_door_swing_handedness_and_unknown_operation_are_not_guessed(tmp_path):
+    path = tmp_path / "door-operation.ifc"
+    ids = make_fixture(path)
+    model = ifcopenshell.open(str(path))
+    model.by_type("IfcDoorType")[0].OperationType = "SINGLE_SWING_RIGHT"
+    model.write(str(path))
+    result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
+    objects = {row["ifc_global_id"]: row for row in result.tables["ifc_objects"]}
+    door_geometry = next(row["geometry"] for row in result.tables["ifc_object_plan_geometry"]
+                         if row["ifc_object_id"] == objects[ids["door"]]["id"])
+    assert door_geometry["door_symbol"]["swing_end_angle"] - door_geometry["door_symbol"]["swing_start_angle"] == -90
+
+    model = ifcopenshell.open(str(path))
+    model.by_type("IfcDoorType")[0].OperationType = "NOTDEFINED"
+    model.write(str(path))
+    result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
+    objects = {row["ifc_global_id"]: row for row in result.tables["ifc_objects"]}
+    door_geometry = next(row["geometry"] for row in result.tables["ifc_object_plan_geometry"]
+                         if row["ifc_object_id"] == objects[ids["door"]]["id"])
+    assert "door_symbol" not in door_geometry
 
 
 def test_multiple_fire_properties_on_one_object_have_unique_stable_identities(tmp_path):

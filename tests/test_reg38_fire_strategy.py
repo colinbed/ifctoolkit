@@ -3,6 +3,8 @@ import re
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from ifc_app.reg38_projects import Regulation38Repository
 
 PROJECT = "00000000-0000-4000-8000-000000000001"
@@ -136,6 +138,24 @@ def test_bulk_patch_is_project_scoped_and_updates_only_selected_ids():
     assert patch[2]["json"]["relevance"] == "OUT_OF_SCOPE"
 
 
+@pytest.mark.parametrize("relevance,review_status", [
+    ("REVIEW_REQUIRED", "NOT_STARTED"), ("IN_SCOPE", "IN_PROGRESS")])
+def test_review_relevance_and_workflow_status_are_validated_separately(relevance, review_status):
+    auth = FireAuth()
+    Regulation38Repository(auth).update_fire_strategy(
+        "token", PROJECT, ["one"], {"relevance": relevance, "review_status": review_status}, "user")
+    payload = next(call[2]["json"] for call in auth.calls if call[0] == "PATCH")
+    assert payload == {"relevance": relevance, "review_status": review_status, "reviewed_by": "user"}
+
+
+def test_invalid_review_status_is_rejected_before_supabase_patch():
+    auth = FireAuth()
+    with pytest.raises(ValueError, match="workflow status"):
+        Regulation38Repository(auth).update_fire_strategy(
+            "token", PROJECT, ["one"], {"relevance": "REVIEW_REQUIRED", "review_status": "REVIEW_REQUIRED"}, "user")
+    assert not any(call[0] == "PATCH" for call in auth.calls)
+
+
 def test_missing_scan_blocks_page_data():
     class Missing(FireAuth):
         def _request_json(self,method,url,**kwargs):
@@ -169,6 +189,12 @@ def test_fire_workspace_uses_shared_plan_viewer_and_accessible_collapsible_store
     assert 'row.geometry?.type==="LineString"' in viewer and '"plan-object":"plan-space"' in viewer
     assert "this.onSelect&&isObject" in viewer and "selectPlanObject" in script
     assert "this.selectionPoint" in viewer and "plan-selection-marker" in viewer
+    assert "door_symbol" in viewer and 'createElementNS(NS,"path")' in viewer
+    assert "setObjectPredicate" in viewer and "setLayerVisibility" in viewer
+    assert "candidateToggle.checked||r.automatically_suggested" in script
+    assert "visible.has(String(item.id))" in script and "viewer.layer(item)" in script
+    assert "sessionStorage.setItem(layerStoreKey" in script and "slabs:false" in script
+    assert "layer-slabs{pointer-events:none}" in Path("static/saas.css").read_text(encoding="utf-8")
 
 
 def test_category_options_are_associated_flex_rows():
@@ -177,6 +203,16 @@ def test_category_options_are_associated_flex_rows():
     assert '<label class="fire-category-option"><input type="checkbox"' in script
     assert ".fire-category-option{display:flex!important;flex-direction:row!important;align-items:center" in css
     assert ".fire-category-option input{flex:0 0 auto;width:auto!important;margin:0}" in css
+
+
+def test_review_status_posts_enum_value_and_save_failure_returns_to_workspace():
+    script = Path("static/reg38-fire-strategy.js").read_text(encoding="utf-8")
+    routes = Path("ifc_app/saas.py").read_text(encoding="utf-8")
+    assert '<option value="${x}" ${!bulk&&r.review_status===x' in script
+    save_handler = routes.split("async def update_fire_strategy", 1)[1].split("async def create_reg38_zone", 1)[0]
+    assert "fire_strategy_review_save_failed" in save_handler
+    assert '"save_error", "Review could not be saved."' in save_handler
+    assert "RedirectResponse" in save_handler and "draft_category" in save_handler
 
 
 def test_unreviewed_fire_designation_is_a_suggestion_not_a_scope_decision():

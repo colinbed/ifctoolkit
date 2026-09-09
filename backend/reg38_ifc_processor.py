@@ -419,6 +419,20 @@ def _object_plan_geometry(obj: Any, storey: Any) -> dict[str, Any] | None:
                                        "depth": round(max(ys) - min(ys), 6)}
         if obj.is_a("IfcDoor") or obj.is_a("IfcWindow"):
             geometry["opening_width"] = _value(getattr(obj, "OverallWidth", None))
+        if obj.is_a("IfcDoor"):
+            type_obj = ifcopenshell.util.element.get_type(obj)
+            operation = getattr(obj, "OperationType", None) or getattr(type_obj, "OperationType", None)
+            operation = str(operation) if operation else None
+            # Only the unambiguous single-leaf operations can be represented by
+            # this compact one-leaf symbol without inventing extra leaf geometry.
+            if operation in {"SINGLE_SWING_LEFT", "SINGLE_SWING_RIGHT"}:
+                edges = list(zip(geometry["coordinates"], geometry["coordinates"][1:]))
+                start, end = max(edges, key=lambda edge: math.dist(edge[0], edge[1]))
+                hinge, leaf_end = (start, end) if operation.endswith("LEFT") else (end, start)
+                start_angle = math.degrees(math.atan2(leaf_end[1] - hinge[1], leaf_end[0] - hinge[0]))
+                geometry["door_symbol"] = {"door_operation": operation, "hinge_point": hinge,
+                                           "closed_leaf_end": leaf_end, "swing_start_angle": round(start_angle, 6),
+                                           "swing_end_angle": round(start_angle + (90 if operation.endswith("LEFT") else -90), 6)}
         return geometry
     world = _centroid(obj)
     if not world:

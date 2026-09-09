@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -850,16 +850,23 @@ async def update_fire_strategy(request: Request, project_id: str):
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     values = {key: form.get(key) for key in ("relevance", "requirement_reference", "required_fire_performance",
               "evidence_required", "review_notes", "responsible_organisation", "review_status") if form.get(key) is not None}
-    if form.getlist("categories"): values["categories"] = [str(x) for x in form.getlist("categories")]
-    if form.get("no_evidence_required") is not None: values["no_evidence_required"] = form.get("no_evidence_required") == "yes"
+    values["categories"] = [str(x) for x in form.getlist("categories")]
+    values["no_evidence_required"] = form.get("no_evidence_required") == "yes"
     try:
         Regulation38Repository(get_auth_service()).update_fire_strategy(token, project_id,
             [str(x) for x in form.getlist("review_ids")], values, str(user.get("id") or ""))
         selected = str(form.getlist("review_ids")[0]) if form.getlist("review_ids") else ""
         return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?selected={selected}", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
-        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
-                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+        LOGGER.warning("fire_strategy_review_save_failed project_id=%s detail=%s", project_id,
+                       str(exc) if isinstance(exc, ValueError) else exc.detail)
+        draft = [("selected", str(x)) for x in form.getlist("review_ids")[:1]]
+        draft += [(f"draft_{key}", str(value)) for key, value in values.items()
+                  if key != "categories" and value is not None]
+        draft += [("draft_category", str(value)) for value in form.getlist("categories")]
+        draft.append(("draft_present", "true"))
+        draft.append(("save_error", "Review could not be saved."))
+        return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?{urlencode(draft)}", status_code=303)
 
 
 @router.post("/app/projects/{project_id}/regulation-38/zones")
