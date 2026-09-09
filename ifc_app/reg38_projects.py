@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime, timezone
+import hashlib
 from pathlib import Path
 import json
 import logging
@@ -525,6 +526,10 @@ class Regulation38Repository:
         if self.project_role(token, project_id) not in {"OWNER", "ADMIN", "EDITOR"} and not self.is_platform_admin(token):
             raise SupabaseAuthError("You do not have permission to edit this project.", status_code=403)
 
+    def require_project_review(self, token: str, project_id: str) -> None:
+        if self.project_role(token, project_id) not in {"OWNER", "ADMIN", "EDITOR", "REVIEWER"} and not self.is_platform_admin(token):
+            raise SupabaseAuthError("You do not have permission to review project evidence.", status_code=403)
+
     def spatial_review(self, token: str, project_id: str) -> dict[str, Any]:
         """Return source and working spatial data separately; source tables are read-only."""
         pid = quote(project_id)
@@ -769,19 +774,19 @@ class Regulation38Repository:
     def _fire_strategy_summary(reviews: list[Mapping[str, Any]]) -> dict[str, Any]:
         active = [r for r in reviews if not r.get("orphaned")]
         missing_category = sum(r.get("relevance") == "IN_SCOPE" and not (r.get("categories") or []) for r in active)
-        missing_evidence = sum(r.get("relevance") == "IN_SCOPE" and not str(r.get("evidence_required") or "").strip()
-                               and not r.get("no_evidence_required") for r in active)
         reviewed = sum(r.get("relevance") in {"IN_SCOPE", "OUT_OF_SCOPE"} or
                        r.get("review_status") != "NOT_STARTED" for r in active)
         return {"total_suggestions": sum(bool(r.get("automatically_suggested")) for r in active),
             "reviewed": reviewed, "in_scope": sum(r.get("relevance") == "IN_SCOPE" for r in active),
             "out_of_scope": sum(r.get("relevance") == "OUT_OF_SCOPE" for r in active),
             "review_required": sum(r.get("relevance") == "REVIEW_REQUIRED" for r in active),
-            "missing_category": missing_category, "missing_evidence": missing_evidence,
-            "complete": reviewed == len(active) and not (missing_category or missing_evidence)}
+            "unresolved": sum(r.get("relevance") in {"NOT_ASSESSED", "REVIEW_REQUIRED"} for r in active),
+            "missing_category": missing_category,
+            "complete": reviewed == len(active) and not missing_category and
+                        not any(r.get("relevance") == "NOT_ASSESSED" for r in active)}
 
     def update_fire_strategy(self, token: str, project_id: str, review_ids: list[str], values: Mapping[str, Any], user_id: str) -> None:
-        self.require_project_edit(token, project_id)
+        self.require_project_review(token, project_id)
         if not review_ids: raise ValueError("Select at least one review record.")
         relevance = values.get("relevance")
         review_status = values.get("review_status")
@@ -795,6 +800,91 @@ class Regulation38Repository:
         payload["reviewed_by"] = user_id or None
         ids = ",".join(quote(value) for value in review_ids)
         self._data_request("PATCH", f"fire_strategy_reviews?project_id=eq.{quote(project_id)}&id=in.({ids})", token, json=payload)
+
+    def complete_firetrace_setup(self, token: str, project_id: str) -> int:
+        """Atomically complete scope and materialise only confirmed tracker items."""
+        result = self._data_request("POST", "rpc/complete_firetrace_setup", token,
+                                    json={"target_project_id": project_id})
+        return int(result or 0)
+
+    def operational_dashboard(self, token: str, project_id: str, user_id: str) -> dict[str, Any]:
+        metrics = self._data_request("GET", f"firetrace_project_metrics?project_id=eq.{quote(project_id)}&select=*&limit=1", token)
+        tasks = self._data_request("GET", "firetrace_evidence_requirements?project_id=eq."
+            f"{quote(project_id)}&assigned_to_user_id=eq.{quote(user_id)}&select=*,firetrace_tracker_items(title,categories)&order=due_at.asc.nullslast&limit=8", token)
+        reviews = self._data_request("GET", "firetrace_evidence_requirements?project_id=eq."
+            f"{quote(project_id)}&status=in.(SUBMITTED,UNDER_REVIEW,RETURNED)&select=*,firetrace_tracker_items(title)&order=updated_at.desc&limit=8", token)
+        return {"metrics": dict(metrics[0]) if isinstance(metrics, list) and metrics else {},
+                "my_tasks": tasks if isinstance(tasks, list) else [],
+                "requiring_review": reviews if isinstance(reviews, list) else []}
+
+    def tracker_items(self, token: str, project_id: str) -> list[dict[str, Any]]:
+        rows = self._data_request("GET", f"firetrace_tracker_items?project_id=eq.{quote(project_id)}&select=*&order=created_at", token)
+        return [dict(row) for row in rows] if isinstance(rows, list) else []
+
+    def project_tasks(self, token: str, project_id: str) -> list[dict[str, Any]]:
+        rows = self._data_request("GET", "firetrace_evidence_requirements?project_id=eq."
+            f"{quote(project_id)}&select=*,firetrace_tracker_items(title,categories,storey_id),profiles:assigned_to_user_id(display_name)&order=due_at.asc.nullslast", token)
+        return [dict(row) for row in rows] if isinstance(rows, list) else []
+
+    def my_tasks(self, token: str, user_id: str) -> list[dict[str, Any]]:
+        rows = self._data_request("GET", "firetrace_evidence_requirements?assigned_to_user_id=eq."
+            f"{quote(user_id)}&status=not.in.(ACCEPTED,NOT_REQUIRED)&select=*,projects(name),firetrace_tracker_items(title,categories)&order=due_at.asc.nullslast", token)
+        return [dict(row) for row in rows] if isinstance(rows, list) else []
+
+    def create_evidence_requirement(self, token: str, project_id: str, values: Mapping[str, Any], user_id: str) -> str:
+        self.require_project_edit(token, project_id)
+        requirement_id = str(uuid4())
+        payload = {"id": requirement_id, "project_id": project_id,
+            "tracker_item_id": str(values.get("tracker_item_id") or ""), "evidence_type": str(values.get("evidence_type") or "DOCUMENT"),
+            "title": str(values.get("title") or "").strip(), "description": values.get("description") or None,
+            "required": bool(values.get("required", True)), "assigned_to_user_id": values.get("assigned_to_user_id") or None,
+            "assigned_by_user_id": user_id if values.get("assigned_to_user_id") else None,
+            "assigned_at": datetime.now(timezone.utc).isoformat() if values.get("assigned_to_user_id") else None,
+            "responsible_organisation": values.get("responsible_organisation") or None, "due_at": values.get("due_at") or None}
+        if not payload["tracker_item_id"] or not payload["title"]: raise ValueError("Tracker item and evidence title are required.")
+        self._data_request("POST", "firetrace_evidence_requirements", token, json=payload)
+        return requirement_id
+
+    def upload_evidence(self, token: str, project_id: str, requirement_id: str, user_id: str,
+                        filename: str, content_type: str, content: bytes, description: str = "") -> str:
+        """Store an immutable evidence version, cleaning storage if metadata fails."""
+        safe_name = Path(filename).name or "evidence.bin"
+        rows = self._data_request("GET", "firetrace_evidence_requirements?id=eq."
+            f"{quote(requirement_id)}&project_id=eq.{quote(project_id)}&assigned_to_user_id=eq.{quote(user_id)}&select=id,tracker_item_id&limit=1", token)
+        if not isinstance(rows, list) or not rows: raise SupabaseAuthError("This evidence task is not assigned to you.", status_code=403)
+        tracker_id, submission_id = str(rows[0]["tracker_item_id"]), str(uuid4())
+        path = f"projects/{project_id}/evidence/{tracker_id}/{requirement_id}/{submission_id}/{safe_name}"
+        url = f"{self.auth.settings.project_url}/storage/v1/object/{quote(self.bucket, safe='')}/{quote(path, safe='/')}"
+        response = requests.post(url, headers={**self.auth._headers(token), "Content-Type": content_type or "application/octet-stream"},
+                                 data=content, timeout=self.auth.settings.request_timeout_seconds)
+        if not 200 <= response.status_code < 300:
+            raise SupabaseAuthError("Evidence upload failed.", status_code=502, detail=self._safe_storage_response(response))
+        try:
+            previous = self._data_request("GET", f"firetrace_evidence_submissions?evidence_requirement_id=eq.{quote(requirement_id)}&select=id,version_number&order=version_number.desc&limit=1", token)
+            version = int(previous[0]["version_number"]) + 1 if isinstance(previous, list) and previous else 1
+            self._data_request("POST", "firetrace_evidence_submissions", token, json={"id": submission_id,
+                "project_id": project_id, "evidence_requirement_id": requirement_id, "tracker_item_id": tracker_id,
+                "submitted_by_user_id": user_id, "storage_bucket": self.bucket, "storage_path": path,
+                "original_filename": safe_name, "mime_type": content_type, "file_size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(), "description": description or None,
+                "version_number": version, "supersedes_submission_id": previous[0]["id"] if previous else None})
+            self._data_request("PATCH", f"firetrace_evidence_requirements?id=eq.{quote(requirement_id)}", token, json={"status": "SUBMITTED"})
+        except Exception:
+            requests.delete(url, headers=self.auth._headers(token), timeout=self.auth.settings.request_timeout_seconds)
+            raise
+        return submission_id
+
+    def review_evidence(self, token: str, project_id: str, submission_id: str, decision: str,
+                        comment: str, user_id: str) -> None:
+        self.require_project_review(token, project_id)
+        if decision not in {"ACCEPTED", "RETURNED"}: raise ValueError("Choose Accept or Return.")
+        if decision == "RETURNED" and not comment.strip(): raise ValueError("A return comment is required.")
+        rows = self._data_request("GET", f"firetrace_evidence_submissions?id=eq.{quote(submission_id)}&project_id=eq.{quote(project_id)}&select=evidence_requirement_id&limit=1", token)
+        if not isinstance(rows, list) or not rows: raise ValueError("Submission not found.")
+        self._data_request("PATCH", f"firetrace_evidence_submissions?id=eq.{quote(submission_id)}", token,
+            json={"review_status": decision, "reviewed_by_user_id": user_id, "review_comment": comment or None})
+        self._data_request("PATCH", f"firetrace_evidence_requirements?id=eq.{quote(str(rows[0]['evidence_requirement_id']))}", token,
+            json={"status": decision})
 
     def update_space(self, token: str, project_id: str, space_id: str, values: Mapping[str, Any]) -> None:
         self.require_project_admin(token, project_id)
