@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -598,6 +598,19 @@ def spatial_storey_plan(request: Request, project_id: str, storey_id: str):
         return JSONResponse({"detail": exc.public_message}, status_code=exc.status_code)
 
 
+@router.get("/api/firetrace/projects/{project_id}/fire-strategy/objects/{object_id}", response_class=JSONResponse)
+def fire_strategy_object(request: Request, project_id: str, object_id: str):
+    user = _require_firetrace(request)
+    if isinstance(user, (HTMLResponse, RedirectResponse)):
+        return user
+    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
+    try:
+        return JSONResponse(Regulation38Repository(get_auth_service()).fire_strategy_object(
+            token, project_id, object_id))
+    except SupabaseAuthError as exc:
+        return JSONResponse({"detail": exc.public_message}, status_code=exc.status_code)
+
+
 @router.get("/app/firetrace/projects/{project_id}", response_class=HTMLResponse)
 def firetrace_project_dashboard(request: Request, project_id: str):
     user = _require_firetrace(request)
@@ -837,16 +850,23 @@ async def update_fire_strategy(request: Request, project_id: str):
     form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
     values = {key: form.get(key) for key in ("relevance", "requirement_reference", "required_fire_performance",
               "evidence_required", "review_notes", "responsible_organisation", "review_status") if form.get(key) is not None}
-    if form.getlist("categories"): values["categories"] = [str(x) for x in form.getlist("categories")]
-    if form.get("no_evidence_required") is not None: values["no_evidence_required"] = form.get("no_evidence_required") == "yes"
+    values["categories"] = [str(x) for x in form.getlist("categories")]
+    values["no_evidence_required"] = form.get("no_evidence_required") == "yes"
     try:
         Regulation38Repository(get_auth_service()).update_fire_strategy(token, project_id,
             [str(x) for x in form.getlist("review_ids")], values, str(user.get("id") or ""))
         selected = str(form.getlist("review_ids")[0]) if form.getlist("review_ids") else ""
         return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?selected={selected}", status_code=303)
     except (ValueError, SupabaseAuthError) as exc:
-        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message,
-                            status_code=400 if isinstance(exc, ValueError) else exc.status_code)
+        LOGGER.warning("fire_strategy_review_save_failed project_id=%s detail=%s", project_id,
+                       str(exc) if isinstance(exc, ValueError) else exc.detail)
+        draft = [("selected", str(x)) for x in form.getlist("review_ids")[:1]]
+        draft += [(f"draft_{key}", str(value)) for key, value in values.items()
+                  if key != "categories" and value is not None]
+        draft += [("draft_category", str(value)) for value in form.getlist("categories")]
+        draft.append(("draft_present", "true"))
+        draft.append(("save_error", "Review could not be saved."))
+        return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?{urlencode(draft)}", status_code=303)
 
 
 @router.post("/app/projects/{project_id}/regulation-38/zones")

@@ -35,12 +35,27 @@ def make_fixture(path: Path):
     ifcopenshell.api.run("aggregate.assign_object", model, products=[spatial_zone], relating_object=storey)
     door = create("IfcDoor", "FD door")
     ifcopenshell.api.run("spatial.assign_container", model, products=[door], relating_structure=storey)
+    door_profile = ifcopenshell.api.run("profile.add_arbitrary_profile", model,
+                                        profile=[(1.0, 0.0), (2.0, 0.0), (2.0, .15), (1.0, .15)])
+    door_representation = ifcopenshell.api.run("geometry.add_profile_representation", model, context=body,
+                                                profile=door_profile, depth=2.1)
+    ifcopenshell.api.run("geometry.assign_representation", model, product=door, representation=door_representation)
     common = ifcopenshell.api.run("pset.add_pset", model, product=door, name="Pset_DoorCommon")
     ifcopenshell.api.run("pset.edit_pset", model, pset=common, properties={"FireRating": "FD60S"})
     door_type = create("IfcDoorType", "Door type")
+    door_type.OperationType = "SINGLE_SWING_LEFT"
     custom = ifcopenshell.api.run("pset.add_pset", model, product=door_type, name="ManufacturerData")
     ifcopenshell.api.run("pset.edit_pset", model, pset=custom, properties={"Fire Resistance": "EI60"})
     ifcopenshell.api.run("type.assign_type", model, related_objects=[door], relating_type=door_type)
+    wall = create("IfcWallStandardCase", "External wall")
+    column = create("IfcColumn", "Column C1")
+    ifcopenshell.api.run("spatial.assign_container", model, products=[wall, column], relating_structure=storey)
+    for product, points, depth in ((wall, [(0., 0.), (5., 0.), (5., .25), (0., .25)], 3.0),
+                                   (column, [(3., 2.), (3.4, 2.), (3.4, 2.4), (3., 2.4)], 3.0)):
+        product_profile = ifcopenshell.api.run("profile.add_arbitrary_profile", model, profile=points)
+        product_representation = ifcopenshell.api.run("geometry.add_profile_representation", model, context=body,
+                                                       profile=product_profile, depth=depth)
+        ifcopenshell.api.run("geometry.assign_representation", model, product=product, representation=product_representation)
     p1, p2 = model.createIfcCartesianPoint((0.0, 0.0)), model.createIfcCartesianPoint((10.0, 0.0))
     curve = model.createIfcPolyline((p1, p2))
     axis = model.createIfcGridAxis("A", curve, True)
@@ -48,7 +63,8 @@ def make_fixture(path: Path):
     grid.UAxes, grid.VAxes = (axis,), ()
     ifcopenshell.api.run("spatial.assign_container", model, products=[grid], relating_structure=storey)
     model.write(str(path))
-    return {"space": space.GlobalId, "zone": zone.GlobalId, "spatial_zone": spatial_zone.GlobalId, "door": door.GlobalId}
+    return {"space": space.GlobalId, "zone": zone.GlobalId, "spatial_zone": spatial_zone.GlobalId,
+            "door": door.GlobalId, "wall": wall.GlobalId, "column": column.GlobalId}
 
 
 def test_space_zone_spatial_zone_grid_and_properties(tmp_path):
@@ -93,6 +109,50 @@ def test_standard_and_custom_fire_discovery_and_statistics(tmp_path):
     assert result.statistics["fire_safety_spatial_zones"] == 1
     assert result.statistics["grid_axes"] == 1
     assert result.statistics["doors_with_detected_fire_rating"] == 1
+
+
+def test_relevant_objects_have_simplified_storey_local_plan_footprints(tmp_path):
+    path = tmp_path / "plan-objects.ifc"
+    ids = make_fixture(path)
+
+    result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
+    objects = {row["ifc_global_id"]: row for row in result.tables["ifc_objects"]}
+    geometry = {row["ifc_object_id"]: row for row in result.tables["ifc_object_plan_geometry"]}
+
+    for kind in ("wall", "door", "column"):
+        row = geometry[objects[ids[kind]]["id"]]
+        assert row["geometry_type"] == "Polygon"
+        assert row["geometry"]["coordinate_system"] == "storey-local"
+        assert row["geometry"]["coordinates"][0] == row["geometry"]["coordinates"][-1]
+        assert len(row["geometry"]["coordinates"]) <= 6
+    assert result.statistics["walls_with_plan_geometry"] == 1
+    assert result.statistics["doors_with_plan_geometry"] == 1
+    assert result.statistics["columns_with_plan_geometry"] == 1
+    door = geometry[objects[ids["door"]]["id"]]["geometry"]
+    assert door["door_symbol"]["door_operation"] == "SINGLE_SWING_LEFT"
+    assert door["door_symbol"]["swing_end_angle"] - door["door_symbol"]["swing_start_angle"] == 90
+
+
+def test_door_swing_handedness_and_unknown_operation_are_not_guessed(tmp_path):
+    path = tmp_path / "door-operation.ifc"
+    ids = make_fixture(path)
+    model = ifcopenshell.open(str(path))
+    model.by_type("IfcDoorType")[0].OperationType = "SINGLE_SWING_RIGHT"
+    model.write(str(path))
+    result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
+    objects = {row["ifc_global_id"]: row for row in result.tables["ifc_objects"]}
+    door_geometry = next(row["geometry"] for row in result.tables["ifc_object_plan_geometry"]
+                         if row["ifc_object_id"] == objects[ids["door"]]["id"])
+    assert door_geometry["door_symbol"]["swing_end_angle"] - door_geometry["door_symbol"]["swing_start_angle"] == -90
+
+    model = ifcopenshell.open(str(path))
+    model.by_type("IfcDoorType")[0].OperationType = "NOTDEFINED"
+    model.write(str(path))
+    result = Regulation38IfcProcessor().process(path, project_id="project", ifc_file_id="file")
+    objects = {row["ifc_global_id"]: row for row in result.tables["ifc_objects"]}
+    door_geometry = next(row["geometry"] for row in result.tables["ifc_object_plan_geometry"]
+                         if row["ifc_object_id"] == objects[ids["door"]]["id"])
+    assert "door_symbol" not in door_geometry
 
 
 def test_multiple_fire_properties_on_one_object_have_unique_stable_identities(tmp_path):
