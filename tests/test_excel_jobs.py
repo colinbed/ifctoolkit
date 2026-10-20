@@ -73,3 +73,44 @@ def test_extract_endpoint_queues_and_returns_job(monkeypatch, tmp_path):
     response = app.excel_extract(session_id, {"ifc_file": "model.ifc"})
     assert response == {"job_id": "job-1", "status": "queued", "progress": 0, "message": "Preparing model..."}
     assert captured["spec"]["input_path"].endswith("model.ifc")
+
+
+def test_update_option_requires_explicit_boolean_and_defaults_off(monkeypatch):
+    session_id = app.SESSION_STORE.create()
+    root = Path(app.SESSION_STORE.ensure(session_id))
+    (root / "model.ifc").write_bytes(b"IFC")
+    (root / "model.xlsx").write_bytes(b"XLSX")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return {"job_id": "split-job", "status": "queued", "progress": 0, "message": "Preparing"}
+
+    monkeypatch.setattr(app.EXCEL_JOBS, "create", create)
+    payload = {"ifc_file": "model.ifc", "excel_file": "model.xlsx", "add_new": "no"}
+    for value, expected in [(None, False), (False, False), ("false", False), (True, True)]:
+        current = dict(payload)
+        if value is not None:
+            current["split_shared_types"] = value
+        app.excel_apply(session_id, current)
+        assert captured["spec"]["split_shared_types"] is expected
+        assert captured["spec"]["add_new"] == "no"
+
+
+def test_worker_passes_split_option_to_writeback(monkeypatch, tmp_path):
+    from backend import excel_job_runner
+    captured = {}
+
+    def writeback(*args, **kwargs):
+        captured.update(kwargs)
+        return {"changes": {"created_types": [{"source_guid": "source", "new_guid": "new", "name": "Group", "reassigned_occurrence_count": 2}]}}
+
+    monkeypatch.setattr(app, "update_ifc_from_excel", writeback)
+    spec = dict(_spec(tmp_path), kind="update", split_shared_types=True, add_new="no", excel_path=str(tmp_path / "model.xlsx"))
+    spec_path, result_path = tmp_path / "spec.json", tmp_path / "result.json"
+    spec_path.write_text(json.dumps(spec))
+    excel_job_runner.main(str(spec_path), str(result_path))
+    assert captured["split_shared_types"] is True
+    assert captured["add_new"] == "no"
+    result = json.loads(result_path.read_text())
+    assert result["result"]["changes"]["created_types"][0]["reassigned_occurrence_count"] == 2

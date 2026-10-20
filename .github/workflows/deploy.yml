@@ -29,6 +29,11 @@ jobs:
           python -m pytest
           tests/test_auth_routes.py
           tests/test_ifc_protocol.py
+          tests/test_excel_native_roundtrip.py
+          tests/test_excel_name_resolution.py
+          tests/test_excel_type_splitting.py
+          tests/test_excel_ifc2x3_roundtrip_entities.py
+          tests/test_excel_writeback_preservation.py
           tests/test_public_pages.py
           tests/test_runtime_startup.py
           tests/test_session_upload_route_alignment.py

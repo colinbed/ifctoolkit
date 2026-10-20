@@ -51,6 +51,7 @@ from mapping_store import (
     save_mapping_for_check,
 )
 from validation import validate_value
+from ifc_write_plan import BASELINE_SHEET
 from ifc_protocol import (
     PROTOCOL_CONFIG_SHEET,
     PROTOCOL_DATA_SHEET,
@@ -2072,7 +2073,7 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
         ("Schema", schema_for_lookup),
         ("Identity (read-only)", "GlobalId, Type GlobalId, Building, Assigned Instance Count, SourceFile, material scope/kind/note, availability and all RowKey/StepId/Current*/ExpressLine columns are reference only. Never change identities. Import resolves GlobalIds, never row order or STEP IDs."),
         ("Native edits", "Instance fields target the occurrence. Type fields target IfcRelDefinesByType.RelatingType. Blank cells preserve source values; unchanged aliases and ProtocolData are ignored. Conflicting explicit edits are rejected before mutation."),
-        ("Shared types", "Types and Elements resolve to one canonical type target. Consistent edits affect all assigned instances. Conflicting edits require consistent values or explicit server split_shared_types authorization; a workbook cannot authorize splitting."),
+        ("Shared types", "Types and Elements resolve to one canonical type target. With explicit server split_shared_types authorization, differing requested names create separate assigned type groups, and other type edits follow their instance group. A workbook cannot authorize splitting. Conflicting aliases for the same instance remain errors."),
         ("Predefined Type", "Only native PredefinedType is editable. Blank with Unavailable means this class has no native field. Choose an enum for the selected IFC Entity. USERDEFINED requires Object Type or Element Type where the schema requires it."),
         ("Materials", "Simple IfcMaterial edits change the exported assignment scope and create/reuse a material; shared material entities are never renamed. Structured assignments are reference only and must be edited in an IFC authoring tool. Type-scoped edits affect all assigned instances."),
         ("BuildingStoreys", "Name, Description, Long Name and COBie fields write only to the storey. Building and Elevation are read-only. Spatial hierarchy, placements and geometry are preserved."),
@@ -2484,7 +2485,7 @@ def update_ifc_from_excel(
     )
     APP_LOGGER.info("PROXY_MAPPING_PLAN metrics=%s", native_plan.mapping_metrics)
     if native_plan.errors:
-        raise ExcelWritebackValidationError({"errors": native_plan.errors, "warnings": findings["warnings"]})
+        raise ExcelWritebackValidationError({"errors": native_plan.errors, "warnings": findings["warnings"], "changes": native_plan.summary()})
 
     project = projects[0]
     source_schema = ifc.schema_identifier.upper()
@@ -2552,28 +2553,16 @@ def update_ifc_from_excel(
     for _, row in project_df.iterrows():
         dt = row["DataType"]
         if dt == "Project":
-            if pd.notna(row.get("Name")):
-                project.Name = clean_value(row["Name"]) or project.Name
-            if pd.notna(row.get("Description")):
-                project.Description = clean_value(row["Description"]) or project.Description
-            if pd.notna(row.get("Phase")):
-                project.Phase = clean_value(row["Phase"]) or project.Phase
-            if pd.notna(row.get("ProjectNumber")):
-                project_number = clean_value(row.get("ProjectNumber"))
-                if project_number is not None:
-                    project.LongName = str(project_number)
-                    APP_LOGGER.info("Updated project metadata ProjectNumber=%s", project_number)
+            pass  # Existing attributes are applied only by the canonical plan.
         elif dt == "Site":
             name = clean_value(row.get("Name"))
             desc = clean_value(row.get("Description"))
             if site is None and add_new == "yes" and (name or desc):
                 site = ifc.create_entity("IfcSite", GlobalId=new_guid(), Name=name or "Site")
                 ensure_aggregates(project, site, ifc)
-            if site is not None:
-                if name is not None:
-                    site.Name = name
-                if desc is not None:
-                    site.Description = desc
+            if site is not None and "Site" not in baseline_metadata:
+                site.Name = name or site.Name
+                site.Description = desc
         elif dt == "Building":
             if building is None and add_new == "yes" and (clean_value(row.get("Name")) or clean_value(row.get("Description"))):
                 building = ifc.create_entity(
@@ -2583,10 +2572,9 @@ def update_ifc_from_excel(
                 )
                 ensure_aggregates(site if site is not None else project, building, ifc)
             if building is not None:
-                if pd.notna(row.get("Name")):
-                    building.Name = clean_value(row["Name"]) or building.Name
-                if pd.notna(row.get("Description")):
-                    building.Description = clean_value(row["Description"]) or building.Description
+                if "Building" not in baseline_metadata:
+                    building.Name = clean_value(row.get("Name")) or building.Name
+                    building.Description = clean_value(row.get("Description")) or building.Description
                 if en_entities_value:
                     en_entities_rel, was_created = _ensure_en_entities_classification_rel(
                         ifc,
@@ -2718,7 +2706,7 @@ def update_ifc_from_excel(
                     continue  # The canonical plan already verified this explicit edit.
                 requested = clean_value(row.get(excel_field))
                 actual = clean_value(getattr(entity, ifc_attr, None))
-                if requested is not None and str(actual) != str(requested):
+                if requested is not None and label not in baseline_metadata and str(actual) != str(requested):
                     raise ValueError(f"Output verification failed: expected edited {label}.{excel_field} was not written.")
                 if requested is None and label in baseline_metadata and actual != baseline_metadata[label].get(ifc_attr):
                     raise ValueError(f"Output verification failed: blank {label}.{excel_field} did not preserve the source value.")
@@ -2730,16 +2718,19 @@ def update_ifc_from_excel(
     APP_LOGGER.info("IFC_WRITEBACK_WRITE_COMPLETED output_path=%s filename=%s size_bytes=%d", output_path, os.path.basename(output_path), output_size)
 
     xls.close()
-    if change_log_rows:
-        with pd.ExcelWriter(xls_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    with pd.ExcelWriter(xls_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        if change_log_rows:
             pd.DataFrame(change_log_rows).to_excel(writer, sheet_name="ChangeLog", index=False)
+        native_plan.baseline_dataframe().to_excel(writer, sheet_name=BASELINE_SHEET, index=False)
+        writer.book[BASELINE_SHEET].sheet_state = "hidden"
+        pd.DataFrame(native_plan.previous_split_records + native_plan.summary()["created_types"], columns=["source_guid", "new_guid", "name", "reassigned_occurrence_count"]).drop_duplicates(subset=["new_guid"]).to_excel(writer, sheet_name="TypeSplits", index=False)
     if gc is not None:
         gc.collect()
     APP_LOGGER.info("IFC_WRITE_STAGE stage=Completed")
     return {"output_path": output_path, "warnings": findings["warnings"], "errors": [],
             "applied": sum(r.get("Status") == "Applied" for r in change_log_rows),
             "skipped": sum(str(r.get("Status", "")).startswith("Skipped") for r in change_log_rows),
-            "conflicting": 0, "changes": change_log_rows,
+            "conflicting": 0, "changes": native_plan.summary(), "change_rows": change_log_rows,
             "message": "IFC updated successfully."}
 
 
@@ -8365,7 +8356,7 @@ def get_excel_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {key: job.get(key) for key in (
-        "job_id", "status", "progress", "message", "output_file_id", "error", "errors", "warnings", "recoverable", "kind"
+        "job_id", "status", "progress", "message", "output_file_id", "error", "errors", "warnings", "recoverable", "kind", "result"
     )}
 
 

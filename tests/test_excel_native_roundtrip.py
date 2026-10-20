@@ -107,7 +107,7 @@ def test_overlapping_type_edits_consistent_and_conflicting(tmp_path):
     assert f.by_guid(typ).Name == "New type"
     output.unlink()
     edit(xlsx, "Types", typ, "Type Name", "Conflict")
-    with pytest.raises(ExcelWritebackValidationError, match="Conflicting explicit edits"):
+    with pytest.raises(ExcelWritebackValidationError, match="Conflicting.*edits"):
         apply(paths)
     assert not output.exists()
 
@@ -146,7 +146,7 @@ def test_type_scoped_material_conflicts(tmp_path):
     _, xlsx, _, (a, b, _, _) = paths
     edit(xlsx, "Elements", a, "Material", "Concrete")
     edit(xlsx, "Elements", b, "Material", "Timber")
-    with pytest.raises(ExcelWritebackValidationError, match="Conflicting explicit edits"):
+    with pytest.raises(ExcelWritebackValidationError, match="Conflicting.*edits"):
         apply(paths)
 
 
@@ -281,7 +281,7 @@ def test_version1_aliases_and_conflicting_aliases(tmp_path):
     assert f.by_guid(typ).Description == "Type desc"
     assert f.by_guid(typ).Name == "Legacy type name"
     edit(xlsx, "Elements", a, "Instance Name", "Conflicting new name")
-    with pytest.raises(ExcelWritebackValidationError, match="Conflicting explicit edits"):
+    with pytest.raises(ExcelWritebackValidationError, match="Conflicting.*edits"):
         apply(paths)
 
 
@@ -292,7 +292,7 @@ def test_protocol_explicit_conflict_and_protocol_only_edit(tmp_path):
     f, _ = apply(paths)
     assert f.by_guid(a).Name == "Protocol name"
     edit(xlsx, "Elements", a, "Instance Name", "Other name")
-    with pytest.raises(ExcelWritebackValidationError, match="Conflicting explicit edits"):
+    with pytest.raises(ExcelWritebackValidationError, match="Conflicting.*edits"):
         apply(paths)
 
 
@@ -420,3 +420,36 @@ def test_add_new_does_not_create_blank_site_or_reparent_existing_building(tmp_pa
     assert not f.by_type("IfcSite")
     building = f.by_type("IfcBuilding")[0]
     assert util.get_aggregate(building).is_a() == "IfcProject"
+
+
+def test_repeated_type_material_import_does_not_restore_unchanged_aliases(tmp_path):
+    def prepare(f, a, b, typ, storey):
+        mat = f.create_entity("IfcMaterial", Name="Steel")
+        f.create_entity("IfcRelAssociatesMaterial", GlobalId=guid(), RelatedObjects=[typ], RelatingMaterial=mat)
+    paths = export(tmp_path, prepare=prepare)
+    _, xlsx, output, (a, b, typ, _) = paths
+    edit(xlsx, "Elements", a, "Material", "Timber")
+    apply(paths)
+    again = tmp_path / "again.ifc"
+    result = update_ifc_from_excel(str(output), str(xlsx), str(again))
+    f = ifcopenshell.open(str(again))
+    assert util.get_material(f.by_guid(b)).Name == "Timber"
+    assert result["changes"]["applied"] == 0
+
+
+def test_split_identity_history_survives_repeated_imports(tmp_path):
+    paths = export(tmp_path)
+    _, xlsx, output, (a, b, typ, _) = paths
+    edit(xlsx, "Elements", a, "Type Name", "A type")
+    edit(xlsx, "Elements", b, "Type Name", "B type")
+    f, _ = apply(paths, split_shared_types=True)
+    expected = [util.get_type(f.by_guid(g)).GlobalId for g in (a, b)]
+    previous = output
+    for index in range(2):
+        following = tmp_path / f"again-{index}.ifc"
+        result = update_ifc_from_excel(str(previous), str(xlsx), str(following), split_shared_types=True)
+        f = ifcopenshell.open(str(following))
+        assert [util.get_type(f.by_guid(g)).GlobalId for g in (a, b)] == expected
+        assert result["changes"]["created_types"] == []
+        assert result["changes"]["applied"] == 0
+        previous = following

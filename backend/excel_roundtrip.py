@@ -6,6 +6,9 @@ never a proposal, so worksheet order cannot reverse an explicit edit.
 from collections import defaultdict
 from dataclasses import dataclass, field
 from numbers import Real
+import json
+
+from ifc_write_plan import BASELINE_SHEET, WorkbookWritePlan
 
 import ifcopenshell
 import ifcopenshell.api
@@ -135,11 +138,21 @@ class RoundTripPlan:
         self.schema = schema_reference(model.schema_identifier)
         self.requests = defaultdict(list)
         self.resolved = {}
-        self.errors = []
+        self.shared_plan = WorkbookWritePlan(model, split_shared_types)
+        self.errors = self.shared_plan.errors
+        if BASELINE_SHEET in excel.sheet_names:
+            for _, row in pd.read_excel(excel, BASELINE_SHEET, keep_default_na=False).iterrows():
+                self.shared_plan.baselines[(row["Sheet"], row["GlobalId"], row["Field"])] = json.loads(row["Value"])
+        self.previous_splits = {}
+        self.previous_split_records = []
+        if "TypeSplits" in excel.sheet_names:
+            self.previous_split_records = pd.read_excel(excel, "TypeSplits").to_dict("records")
+            for row in self.previous_split_records:
+                self.previous_splits[str(row["new_guid"])] = str(row["source_guid"])
+        self.clone_sources = {}
         self.logs = []
         if self.version.split(".")[0] not in {"1", "2"}:
             self.error("Instructions", 2, "Workbook Version", f"Unsupported workbook version {self.version}; export a new workbook.")
-        self.splits = {}
         self.skipped = set()
         self.create_missing = create_missing
         self.split_shared_types = split_shared_types
@@ -173,9 +186,12 @@ class RoundTripPlan:
 
     def propose(self, obj, kind, name, value, sheet, row, column, *, baseline=None, origin="", config=None):
         if obj is None or clean(value) is None or value == "UNCHANGED":
+            self.shared_plan.unchanged += 1
             return
         if baseline is None:
             baseline = self.read(obj, kind, name)
+        baseline_key = (sheet, origin or obj.GlobalId, name if sheet == "Properties" else column)
+        baseline = self.shared_plan.baselines.setdefault(baseline_key, baseline)
         if kind == "property" and isinstance(baseline, Real) and not isinstance(baseline, bool):
             try:
                 value = float(value)
@@ -183,6 +199,7 @@ class RoundTripPlan:
                 self.error(sheet, row, column, "This IFC measure property requires a numeric value.")
                 return
         if same(value, baseline):
+            self.shared_plan.unchanged += 1
             return
         key = (obj.GlobalId, kind, name)
         self.requests[key].append(Proposal(clean(value), sheet, row, column, origin, config or {}))
@@ -224,7 +241,7 @@ class RoundTripPlan:
             if sheet == "Types" and clean(row.get("Type GlobalId")) and clean(row.get("GlobalId")) and row["Type GlobalId"] != row["GlobalId"]:
                 self.error(sheet, number, "Type GlobalId", "Conflicting read-only type identity aliases.")
             typ = element_util.get_type(obj) if sheet == "Elements" else None
-            if sheet == "Elements" and clean(row.get("Type GlobalId")) and (not typ or row["Type GlobalId"] != typ.GlobalId):
+            if sheet == "Elements" and clean(row.get("Type GlobalId")) and (not typ or row["Type GlobalId"] not in self.known_type_identities(typ.GlobalId)):
                 self.error(sheet, number, "Type GlobalId", "Read-only assigned type identity differs from IfcRelDefinesByType.RelatingType.")
             for attribute, aliases in HEADER_ALIASES[sheet].items():
                 target = typ if attribute.startswith("Type.") else obj
@@ -251,11 +268,18 @@ class RoundTripPlan:
                 self.propose(obj, "attribute", "PredefinedType", row.get(column), sheet, number, column, origin=obj.GlobalId)
             if sheet == "Elements":
                 material, target, _, _, _, _ = material_info(obj)
-                if clean(row.get("Material")) is not None and not same(row.get("Material"), material_info(obj)[2]):
-                    if material and not material.is_a("IfcMaterial"):
+                if material and not material.is_a("IfcMaterial"):
+                    if clean(row.get("Material")) is not None and not same(row.get("Material"), material_info(obj)[2]):
                         self.error(sheet, number, "Material", "Structured material assignment is reference only; edit its layers/profiles/constituents in an IFC authoring tool.")
-                    else:
-                        self.propose(target, "material", "Name", row.get("Material"), sheet, number, "Material", origin=obj.GlobalId, baseline=material_info(obj)[2])
+                else:
+                    self.propose(target, "material", "Name", row.get("Material"), sheet, number, "Material", origin=obj.GlobalId, baseline=material_info(obj)[2])
+
+    def known_type_identities(self, guid):
+        identities = {guid}
+        while guid in self.previous_splits and self.previous_splits[guid] not in identities:
+            guid = self.previous_splits[guid]
+            identities.add(guid)
+        return identities
 
     def _collect_legacy_mapping(self, elements, repository, inference, scope):
         # Keep the existing signature/cache/repository planner for authorised v1
@@ -334,7 +358,9 @@ class RoundTripPlan:
                     continue
                 col = _field_column(spec); value = clean(row.get(col))
                 # Compare with the exported source, which may differ from the write target.
-                if value is None or same(value, read_field(self.model, obj, spec)):
+                baseline = self.shared_plan.baselines.setdefault(("ProtocolData", obj.GlobalId, col), read_field(self.model, obj, spec))
+                if value is None or same(value, baseline):
+                    self.shared_plan.unchanged += 1
                     continue
                 source = cfg.get("target") or spec.get("source") or {}
                 kind = source.get("kind", "attribute").lower()
@@ -359,38 +385,53 @@ class RoundTripPlan:
                     self.requests[key].append(Proposal(value, "ProtocolData", index + 2, col, obj.GlobalId, {"source": source, **cfg}))
 
     def _resolve(self):
-        for key, proposals in self.requests.items():
-            values = {str(p.value) for p in proposals}
-            if len(values) == 1:
-                self.resolved[key] = proposals[0]; continue
-            obj = self.model.by_guid(key[0])
-            # Splitting requires explicit server/API authorization. Worksheet cells
-            # cannot grant it. Group all requested type attributes per occurrence.
-            if obj.is_a("IfcTypeObject") and self.split_shared_types and all(p.sheet in {"Elements", "ProtocolData"} and p.origin != key[0] for p in proposals):
-                for p in proposals:
-                    local = (p.origin, key[1], key[2])
-                    existing = self.splits.get(local)
-                    if existing and not same(existing[1].value, p.value):
-                        self.error(p.sheet, p.row, p.column, f"Conflicting aliases for instance {p.origin}.")
-                    self.splits[local] = (key[0], p)
-                continue
-            sources = ", ".join(f"{p.sheet}!{p.row} ({p.column})" for p in proposals[:6])
-            self.error(proposals[0].sheet, proposals[0].row, proposals[0].column,
-                       f"Conflicting explicit edits for {key[0]} {key[2]}: {sources}. Use consistent values or the authorised shared-type splitting option.")
-        # A split receives all explicit type proposals for that occurrence.
-        origins = {k[0] for k in self.splits}
-        for key, proposals in self.requests.items():
-            if not self.model.by_guid(key[0]).is_a("IfcTypeObject"):
-                continue
-            for p in proposals:
-                if p.origin in origins:
-                    self.splits[(p.origin, key[1], key[2])] = (key[0], p)
-            if all(p.origin in origins for p in proposals):
-                self.resolved.pop(key, None)
+        # Reuse the existing shared-target resolver and authorised name-splitting
+        # workflow. Native schema/material handlers execute its canonical targets.
+        for (guid, kind, name), proposals in self.requests.items():
+            attr, pset, prop, system = "", "", "", ""
+            target = {"kind": kind}
+            if kind == "attribute":
+                attr = name; target["attribute"] = name
+            elif kind == "property":
+                pset, prop = name.split(".", 1); target.update(pset=pset, property=prop)
+            elif kind == "classification":
+                system = name; target["system"] = name
+            else:
+                attr = name
+            identity = (guid, kind, attr, pset, prop, "", "", system)
+            for proposal in proposals:
+                origin = proposal.origin or guid
+                self.shared_plan.candidates[identity].append(dict(
+                    element_guid=origin, target_guid=guid, target=target,
+                    value=proposal.value, old=self.read(self.model.by_guid(guid), kind, name),
+                    sheet=proposal.sheet, row=proposal.row, field=proposal.column,
+                    config=proposal.config, via_type=origin != guid,
+                    native_kind=kind, native_name=name, proposal=proposal,
+                ))
+        self.shared_plan.resolve()
+        self.clone_sources = {split["new_guid"]: split["source_guid"] for split in self.shared_plan.splits}
+        for candidate in self.shared_plan.resolved:
+            key = (candidate["target_guid"], candidate["native_kind"], candidate["native_name"])
+            p = candidate["proposal"]
+            self.resolved[key] = Proposal(candidate["value"], p.sheet, p.row, p.column, p.origin, candidate["config"])
+
+    def source_object(self, guid):
+        return self.model.by_guid(self.clone_sources.get(guid, guid))
+
+    def baseline_dataframe(self):
+        return self.shared_plan.baseline_dataframe()
+
+    def summary(self):
+        return dict(applied=sum(r["Status"] == "Applied" for r in self.logs),
+                    unchanged=self.shared_plan.unchanged + sum(r["Status"] == "Unchanged" for r in self.logs),
+                    skipped=sum(str(r["Status"]).startswith("Skipped") for r in self.logs),
+                    conflicting=len(self.errors), created_types=self.shared_plan.created_types,
+                    affected_conflict_rows=len({(row["sheet"], row["row"]) for error in self.errors
+                        for group in error.get("requested_values", []) for row in group["affected"]}))
 
     def _expand_type_conversions(self):
         for (guid, kind, _), proposal in list(self.resolved.items()):
-            obj = self.model.by_guid(guid)
+            obj = self.source_object(guid)
             if kind != "entity" or not obj.is_a("IfcTypeProduct"):
                 continue
             info = self.schema.get(str(proposal.value), {})
@@ -407,7 +448,7 @@ class RoundTripPlan:
 
     def _validate(self):
         for key, proposal in self.resolved.items():
-            guid, kind, name = key; obj = self.model.by_guid(guid)
+            guid, kind, name = key; obj = self.source_object(guid)
             entity_request = self.resolved.get((guid, "entity", "class"))
             entity = str(entity_request.value) if entity_request else obj.is_a()
             info = self.schema.get(entity)
@@ -449,59 +490,21 @@ class RoundTripPlan:
                         desired = target_occurrence.value if target_occurrence else occurrence.is_a()
                         if desired not in info["correspondence"]:
                             self.error(proposal.sheet, proposal.row, proposal.column, "Type class change needs compatible occurrence class edits for its assigned instances.")
-        for (origin, kind, name), (guid, proposal) in self.splits.items():
-            obj = self.model.by_guid(guid)
-            info = self.schema[obj.is_a()]
-            if kind not in {"attribute", "material", "property"}:
-                self.error(proposal.sheet, proposal.row, proposal.column, "Shared-type splitting supports attribute, property and simple material edits; use Types for class conversions.")
-            if kind == "attribute":
-                if name not in info["attributes"]:
-                    self.error(proposal.sheet, proposal.row, proposal.column, f"Type has no native {name}.")
-                elif name == "PredefinedType":
-                    if proposal.value not in info["enum"]:
-                        self.error(proposal.sheet, proposal.row, proposal.column, f"Invalid {obj.is_a()}.PredefinedType '{proposal.value}'.")
-                    elif proposal.value == "USERDEFINED":
-                        companion = self.splits.get((origin, "attribute", "ElementType"))
-                        if not clean(companion[1].value if companion else obj.ElementType):
-                            self.error(proposal.sheet, proposal.row, proposal.column, "USERDEFINED requires native ElementType.")
 
     def apply(self):
         # Snapshot native graph references for output verification, without copying geometry.
-        self.original_values = {key: self.read(self.model.by_guid(key[0]), key[1], key[2]) for key in self.resolved}
+        self.original_values = {key: self.read(self.source_object(key[0]), key[1], key[2]) for key in self.resolved}
         for obj in self.model.by_type("IfcProduct"):
             self.preserved[obj.GlobalId] = {a: str(getattr(obj, a, None)) for a in ("ObjectPlacement", "Representation", "Elevation") if hasattr(obj, a)}
         for obj in self.model.by_type("IfcElement"):
             typ = element_util.get_type(obj)
             self.expected_types[obj.GlobalId] = typ.GlobalId if typ else None
+        self.shared_plan._apply_splits(self.model)
+        self.expected_types.update(self.shared_plan.assignments)
         # The API coherently reassigns occurrences when reassigning a type.
         ordered = sorted(self.resolved.items(), key=lambda item: (item[0][1] != "entity", not self.model.by_guid(item[0][0]).is_a("IfcTypeObject")))
         for key, proposal in ordered:
             self._apply_one(key, proposal)
-        clones = {}
-        for (origin, kind, name), (guid, proposal) in self.splits.items():
-            if origin not in clones:
-                original = self.model.by_guid(guid)
-                clone = ifcopenshell.api.run("root.copy_class", self.model, product=original)
-                occurrence = self.model.by_guid(origin)
-                # Direct relationship reassignment avoids geometry/material remapping.
-                for rel in list(occurrence.IsTypedBy if hasattr(occurrence, "IsTypedBy") else occurrence.IsDefinedBy):
-                    if rel.is_a("IfcRelDefinesByType"):
-                        others = [o for o in rel.RelatedObjects if o != occurrence]
-                        if others: rel.RelatedObjects = others
-                        else: self.model.remove(rel)
-                self.model.create_entity("IfcRelDefinesByType", GlobalId=new_guid(), OwnerHistory=getattr(original, "OwnerHistory", None), RelatingType=clone, RelatedObjects=[occurrence])
-                clones[origin] = clone.GlobalId
-                self.expected_types[origin] = clone.GlobalId
-            new_key = (clones[origin], kind, name)
-            self._apply_one(new_key, proposal)
-            self.resolved[new_key] = proposal
-        # Record implicit, supported occurrence changes caused by type conversion.
-        for guid, _, _ in list(self.resolved):
-            obj = self.model.by_guid(guid)
-            if obj.is_a("IfcTypeObject"):
-                for occurrence in element_util.get_types(obj):
-                    key = (occurrence.GlobalId, "entity", "class")
-                    self.resolved.setdefault(key, Proposal(occurrence.is_a(), "Types", 0, "IFC Entity"))
         return self.logs
 
     def _apply_one(self, key, proposal):
@@ -514,6 +517,10 @@ class RoundTripPlan:
         guid, kind, name = key; obj = self.model.by_guid(guid)
         old = self.original_values.get(key, self.read(obj, kind, name))
         status = "Applied"
+        if kind != "floor_classification" and same(self.read(obj, kind, name), proposal.value):
+            self.logs.append({"GlobalId": guid, "Status": "Unchanged", "Sheet": proposal.sheet, "Row": proposal.row,
+                              "Field": proposal.column, "FromValue": old, "ToValue": proposal.value, "Message": f"{kind}: {name}"})
+            return
         if kind == "attribute":
             setattr(obj, name, str(proposal.value))
         elif kind == "entity":

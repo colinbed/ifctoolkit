@@ -39,8 +39,11 @@ these conventions.
 
 ## Planning and shared types
 
-All explicit native/property/material proposals are compared to the source IFC
+The existing `WorkbookWritePlan` resolver and approved type-splitting implementation
+are reused. Native/property/material proposals are compared to the source IFC
 before mutation and grouped by canonical GlobalId plus actual IFC target. The
+hidden writeback baseline is retained across repeated imports so unchanged aliases
+cannot undo prior edits. The
 same resolution includes editable ProtocolData; unchanged protocol values are
 ignored, including fields whose exported source differs from their write target.
 Conflicting explicit aliases or shared-type requests produce structured,
@@ -49,9 +52,10 @@ edits update the original type and affect its assigned instances.
 
 The UI's **Split shared types** checkbox sends the explicit boolean
 `split_shared_types: true` through the existing job endpoint to the importer.
-The Python API also accepts that keyword. Conflicting per-instance type
-attribute/property/simple-material requests can then receive separate assigned
-types; original occurrence GUIDs and geometric references remain intact. A
+The Python API also accepts that keyword. Differing per-instance type names then form separate assigned type groups;
+other attribute/property/simple-material edits follow the instance's group.
+Unedited instances keep the original type. Original occurrence GUIDs and
+geometric references remain intact. A
 workbook cell cannot grant splitting. Conflicts involving an explicit Types row
 still require consistent edits. Type-class conversions are edited coherently on
 Types rather than split through per-instance class requests.
@@ -115,7 +119,7 @@ are returned and written to ChangeLog; conflicts return structured errors.
 
 ## Validation
 
-Validation result: **63 tests passed** with the complete relevant suite run outside the execution sandbox. JavaScript syntax and `git diff --check` also passed.
+Validation result: **93 tests passed** with the complete relevant suite run outside the execution sandbox. JavaScript syntax and `git diff --check` also passed.
 
 For a sandbox-compatible focused run:
 
