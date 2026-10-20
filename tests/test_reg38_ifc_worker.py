@@ -139,3 +139,105 @@ def test_failed_postgrest_response_is_logged_before_raise(monkeypatch, caplog):
             {"fire_requirements": [{"id": "same", "source_finding_key": "same"}]})
     assert '"response_status":400' in caplog.text
     assert "cardinality" in caplog.text
+
+
+@pytest.mark.parametrize("error", [worker.requests.Timeout("slow"), worker.requests.ConnectionError("reset")])
+def test_control_plane_transport_errors_are_retryable(monkeypatch, error):
+    monkeypatch.setattr(worker.requests, "request", lambda *args, **kwargs: (_ for _ in ()).throw(error))
+    with pytest.raises(worker.TransientSupabaseError) as exc:
+        worker.SupabaseBatchSink("https://example.test", "secret").claim()
+    assert exc.value.operation == "claim" and exc.value.status is None
+
+
+@pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
+def test_retryable_control_plane_statuses_are_classified(monkeypatch, status):
+    class Response:
+        ok, content, text = False, b'{"message":"temporary"}', "temporary"
+        status_code = status
+        def raise_for_status(self): raise AssertionError("transient response used HTTPError")
+    monkeypatch.setattr(worker.requests, "request", lambda *args, **kwargs: Response())
+    with pytest.raises(worker.TransientSupabaseError) as exc:
+        worker.SupabaseBatchSink("https://example.test", "secret").claim()
+    assert exc.value.status == status
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_permanent_control_plane_statuses_surface(monkeypatch, status):
+    class Response:
+        ok, content, text = False, b"{}", "permanent"
+        status_code = status
+        def raise_for_status(self): raise RuntimeError(f"HTTP {status}")
+    monkeypatch.setattr(worker.requests, "request", lambda *args, **kwargs: Response())
+    with pytest.raises(RuntimeError, match=str(status)):
+        worker.SupabaseBatchSink("https://example.test", "secret").claim()
+
+
+class PollSink:
+    worker_id = "poll-worker"
+    def __init__(self, claims, recoveries=None):
+        self.claims = list(claims); self.recoveries = list(recoveries or [0] * 20)
+        self.claim_count = self.recovery_count = 0
+    def recover_stale(self, _seconds):
+        self.recovery_count += 1; value = self.recoveries.pop(0)
+        if isinstance(value, Exception): raise value
+        return value
+    def claim(self):
+        self.claim_count += 1; value = self.claims.pop(0)
+        if isinstance(value, Exception): raise value
+        return value
+
+
+def test_claim_504_backs_off_then_recovers_without_exiting(caplog):
+    caplog.set_level("INFO", logger="reg38.worker")
+    sink = PollSink([worker.TransientSupabaseError("claim", status=504), None])
+    sleeps = []
+    worker.run_worker_loop(sink, poll_seconds=3, stale_seconds=3600, sleep=sleeps.append,
+                           random_value=lambda: 0, max_cycles=2)
+    assert sink.claim_count == 2 and sleeps == [1, 3]
+    assert '"event":"worker_transient_error","operation":"claim","status":504,"attempt":1' in caplog.text
+    assert '"event":"worker_connection_restored"' in caplog.text
+
+
+def test_repeated_claim_504_uses_bounded_backoff_and_worker_remains_alive():
+    sink = PollSink([worker.TransientSupabaseError("claim", status=504) for _ in range(7)])
+    sleeps = []
+    worker.run_worker_loop(sink, poll_seconds=3, stale_seconds=3600, sleep=sleeps.append,
+                           random_value=lambda: 0, max_cycles=7)
+    assert sink.claim_count == 7 and sleeps == [1, 2, 4, 8, 16, 30, 30]
+
+
+def test_recovery_504_is_skipped_while_claim_polling_continues(caplog):
+    caplog.set_level("INFO", logger="reg38.worker")
+    sink = PollSink([None], [worker.TransientSupabaseError("recover_stale", status=504)])
+    worker.run_worker_loop(sink, poll_seconds=3, stale_seconds=3600, sleep=lambda _delay: None,
+                           random_value=lambda: 0, max_cycles=1)
+    assert sink.recovery_count == 1 and sink.claim_count == 1
+    assert '"operation":"recover_stale","status":504' in caplog.text
+
+
+def test_success_resets_claim_backoff():
+    failure = lambda: worker.TransientSupabaseError("claim", status=504)
+    sink = PollSink([failure(), None, failure()])
+    sleeps = []
+    worker.run_worker_loop(sink, poll_seconds=3, stale_seconds=3600, sleep=sleeps.append,
+                           random_value=lambda: 0, max_cycles=3)
+    assert sleeps == [1, 3, 1]
+
+
+def test_idle_worker_emits_periodic_heartbeat_without_poll_spam(caplog):
+    caplog.set_level("INFO", logger="reg38.worker")
+    sink = PollSink([None])
+    clock = [0.0]
+    def sleep(delay): clock[0] += delay
+    worker.run_worker_loop(sink, poll_seconds=301, stale_seconds=3600, sleep=sleep,
+                           monotonic=lambda: clock[0], random_value=lambda: 0,
+                           max_cycles=1, heartbeat_seconds=300)
+    assert caplog.text.count('"event":"worker_heartbeat"') == 1
+    assert '"worker_id":"poll-worker","status":"idle"' in caplog.text
+
+
+def test_claim_recovery_migration_returns_same_workers_live_lease_first():
+    sql = Path("supabase/migrations/202609090001_reg38_claim_recovery.sql").read_text().lower()
+    existing = sql.index("j.status='running' and j.worker_id=p_worker_id")
+    queued = sql.index("j.status='queued'")
+    assert existing < queued and "if found then return" in sql

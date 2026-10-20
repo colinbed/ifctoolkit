@@ -8,7 +8,7 @@ from ifc_app.supabase_auth import _route_requirement
 NOW = datetime(2026, 8, 28, tzinfo=timezone.utc)
 PREMIUM_TOOLS = {
     "ifc_to_excel", "pset_purge", "storey_global_z", "proxy_to_ifcclass", "presentation_layer",
-    "file_reduction", "area_space_purge", "ifc_data_qa", "cobie_qc", "cobie_qa", "regulation_38",
+    "file_reduction", "area_space_purge", "flatten_assemblies", "ifc_data_qa", "cobie_qc", "cobie_qa", "regulation_38",
 }
 
 

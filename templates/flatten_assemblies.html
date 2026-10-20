@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="section-title"><h2>Flatten Assemblies</h2><span class="badge">Derived IFC workflow</span></div>
+  <p class="helper">Combine the geometry in each real IFC decomposition assembly into one existing component object. Unrelated assemblies are processed independently and the source file is never changed.</p>
+</div>
+<div class="card">
+  <div class="section-title"><h3>1. Upload IFC</h3></div>
+  <label>IFC file<input id="fa-upload" type="file" accept=".ifc" /></label>
+  <button class="btn" id="fa-upload-button" type="button">Upload and scan</button>
+  <label>Or select an IFC already in this session<select id="fa-source"><option value="">Choose a file</option></select></label>
+  <button class="btn secondary" id="fa-scan" type="button">Scan model</button>
+</div>
+<div class="card" id="fa-config" hidden>
+  <div class="section-title"><h3>2. Retain object of IFC entity</h3></div>
+  <label for="fa-target">Search scanned IFC classes<input id="fa-target" list="fa-target-options" autocomplete="off" /></label>
+  <datalist id="fa-target-options"></datalist>
+  <p class="helper">The selected existing object will retain its identity and data and receive the geometry of the other components.</p>
+  <div class="notice"><strong>Existing properties and quantities belong to the retained object. They will remain unchanged and may not describe the combined geometry.</strong></div>
+  <button class="btn" id="fa-preview" type="button">Preview flattening</button>
+</div>
+<div class="card" id="fa-preview-card" hidden>
+  <div class="section-title"><h3>3. Preview flattening</h3><span id="fa-counts" class="badge"></span></div>
+  <p class="helper">Nested scopes overlap. Select an ancestor or its descendant, never both; conflicts are shown below and rejected before processing.</p>
+  <div class="table-wrap"><table><thead><tr><th>Include</th><th>Assembly</th><th>Surviving object</th><th>Absorbed</th><th>Status</th></tr></thead><tbody id="fa-assemblies"></tbody></table></div>
+  <button class="btn" id="fa-run" type="button">Flatten selected assemblies</button>
+</div>
+<div class="card" id="fa-results" hidden>
+  <div class="section-title"><h3>4. Flatten and download</h3></div>
+  <div id="fa-status" class="status" role="status" aria-live="polite"></div>
+  <progress id="fa-progress" max="100" value="0"></progress>
+  <div id="fa-downloads" class="file-list"></div>
+  <pre id="fa-report" class="log-box"></pre>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/flatten_assemblies.js"></script>{% endblock %}

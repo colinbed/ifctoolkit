@@ -558,3 +558,21 @@ def test_finalized_ifc_model_scan_get_returns_200_without_admin_user_lookup(monk
     assert response.status_code == 200
     assert "Model Scan" in response.text
     assert not any("/auth/v1/admin/" in url for url in fake.urls)
+
+
+def test_fire_strategy_save_error_redirects_back_with_draft(monkeypatch):
+    cookie = _admin_cookie(monkeypatch, FakeSupabaseAuth())
+    monkeypatch.setattr(saas.Regulation38Repository, "update_fire_strategy",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(
+                            supabase_auth.SupabaseAuthError("Projects could not be loaded.", status_code=400,
+                                                           detail="review_status check constraint")))
+    body = urlencode({"review_ids": "review-1", "relevance": "REVIEW_REQUIRED",
+                      "review_status": "NOT_STARTED", "categories": "COMPARTMENTATION"}).encode()
+
+    response = request("POST", "/app/firetrace/projects/project-id/fire-strategy/reviews", body=body,
+                       headers={"content-type": "application/x-www-form-urlencoded", "cookie": cookie})
+
+    assert response.status_code == 303
+    location = response.header("location")
+    assert "/setup/fire-strategy?" in location and "save_error=Review+could+not+be+saved" in location
+    assert "selected=review-1" in location and "draft_relevance=REVIEW_REQUIRED" in location
