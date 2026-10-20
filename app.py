@@ -91,6 +91,13 @@ from backend.ifc_file_size_reducer import (
     analyze_ifc_file,
     run_reduction as run_ifc_size_reduction,
 )
+from backend.ifc_flatten_assemblies import (
+    FlattenAssembliesError,
+    flatten_assemblies,
+    preview_flattening,
+    scan_assemblies,
+    validate_flatten_choices,
+)
 from backend.ifc_area_spaces import (
     AreaSpaceError,
     AREA_SPACE_JOB_SEMAPHORE,
@@ -477,6 +484,7 @@ DATA_EXTRACT_JOBS: Dict[str, Dict[str, Any]] = {}
 IFC_QA_JOBS: Dict[str, Dict[str, Any]] = {}
 COBIEQC_JOB_STORE = CobieQcJobStore()
 COBIE_QA_JOBS: Dict[str, Dict[str, Any]] = {}
+FLATTEN_ASSEMBLY_JOBS: Dict[str, Dict[str, Any]] = {}
 EXCEL_SCAN_CACHE: Dict[str, Dict[str, Any]] = {}
 EXCEL_JOBS = ExcelJobStore(APP_TEMP_ROOT / "excel-jobs", max_workers=int(os.getenv("EXCEL_JOB_WORKERS", "1")))
 
@@ -6966,6 +6974,11 @@ def purge_area_spaces_page(request: Request):
     return templates.TemplateResponse(request=request, name="purge_area_spaces.html", context={"request": request, "active": "purge-area-spaces"})
 
 
+@app.get("/tools/flatten-assemblies", response_class=HTMLResponse)
+def flatten_assemblies_page(request: Request):
+    return templates.TemplateResponse(request=request, name="flatten_assemblies.html", context={"request": request, "active": "flatten-assemblies"})
+
+
 @app.post("/api/session")
 def create_session(payload: Dict[str, Any] = Body(default=None)):
     SESSION_STORE.cleanup_stale()
@@ -7245,6 +7258,72 @@ def api_reduce_file_size_run(payload: Dict[str, Any] = Body(...)):
             raise HTTPException(status_code=400, detail=detail) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Reduction failed: {exc}") from exc
+
+
+def _flatten_source(session_id: str, source_file: str) -> tuple[Path, Path]:
+    root = Path(SESSION_STORE.ensure(session_id)).resolve()
+    safe = sanitize_filename(os.path.basename(source_file))
+    source = (root / safe).resolve()
+    if root not in source.parents or not source.is_file():
+        raise HTTPException(status_code=404, detail="Selected source IFC was not found")
+    if source.suffix.lower() != ".ifc":
+        raise HTTPException(status_code=400, detail="Flatten Assemblies currently supports STEP IFC (.ifc) files")
+    return root, source
+
+
+@app.post("/api/ifc-tools/flatten-assemblies/scan")
+def api_flatten_assemblies_scan(payload: Dict[str, Any] = Body(...)):
+    _, source = _flatten_source(str(payload.get("session_id") or ""), str(payload.get("source_file") or ""))
+    try:
+        target = str(payload.get("target_entity") or "")
+        return {"status": "ok", "scan": preview_flattening(source, target) if target else scan_assemblies(source)}
+    except FlattenAssembliesError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        APP_LOGGER.exception("flatten_assemblies_scan_failed source=%s", source.name)
+        raise HTTPException(status_code=400, detail=f"IFC assembly scan failed: {exc}") from exc
+
+
+def _run_flatten_job(job_id: str, source: Path, output: Path, report: Path, target: str, choices: list[dict[str, Any]]) -> None:
+    job = FLATTEN_ASSEMBLY_JOBS[job_id]
+    try:
+        job.update(status="running", progress=15, message="Flattening selected assemblies")
+        result = flatten_assemblies(source, output, report, target, choices)
+        job.update(status="complete", progress=100, message="Flattening complete", result=result,
+                   outputs=[{"name": output.name, "kind": "ifc"}, {"name": report.name, "kind": "report"}])
+    except Exception as exc:
+        APP_LOGGER.exception("flatten_assemblies_job_failed job_id=%s", job_id)
+        job.update(status="failed", progress=100, message=str(exc))
+
+
+@app.post("/api/ifc-tools/flatten-assemblies/run")
+def api_flatten_assemblies_run(background_tasks: BackgroundTasks, payload: Dict[str, Any] = Body(...)):
+    session_id = str(payload.get("session_id") or "")
+    root, source = _flatten_source(session_id, str(payload.get("source_file") or ""))
+    target = str(payload.get("target_entity") or "")
+    choices = payload.get("assemblies")
+    if not target or not isinstance(choices, list):
+        raise HTTPException(status_code=400, detail="target_entity and assemblies are required")
+    # Validate target and choices before accepting the background job.
+    preview_flattening(source, target)
+    try:
+        validate_flatten_choices(source, target, choices)
+    except FlattenAssembliesError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = uuid.uuid4().hex
+    output = root / sanitize_filename(f"{source.stem}_flattened.ifc")
+    report = root / sanitize_filename(f"{source.stem}_flattened_report.json")
+    FLATTEN_ASSEMBLY_JOBS[job_id] = {"job_id": job_id, "session_id": session_id, "status": "queued", "progress": 0, "message": "Queued"}
+    background_tasks.add_task(_run_flatten_job, job_id, source, output, report, target, choices)
+    return {"status": "queued", "job_id": job_id}
+
+
+@app.get("/api/ifc-tools/flatten-assemblies/jobs/{job_id}")
+def api_flatten_assemblies_job(job_id: str):
+    job = FLATTEN_ASSEMBLY_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Flatten Assemblies job not found or expired")
+    return job
 
 
 def _resolve_session_ifc_file_paths(session_id: str, file_names: List[str]) -> List[Tuple[str, Path]]:

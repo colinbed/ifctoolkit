@@ -892,58 +892,6 @@ async def update_fire_strategy(request: Request, project_id: str):
         return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?{urlencode(draft)}", status_code=303)
 
 
-@router.post("/app/firetrace/projects/{project_id}/setup/complete")
-def complete_firetrace_setup(request: Request, project_id: str):
-    user = _require_firetrace(request)
-    if isinstance(user, (HTMLResponse, RedirectResponse)): return user
-    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    try:
-        Regulation38Repository(get_auth_service()).complete_firetrace_setup(token, project_id)
-        return RedirectResponse(f"/app/firetrace/projects/{project_id}", status_code=303)
-    except SupabaseAuthError as exc:
-        return RedirectResponse(f"{firetrace_wizard_url(project_id, 6)}?save_error={quote(exc.public_message)}", status_code=303)
-
-
-@router.post("/app/firetrace/projects/{project_id}/evidence-requirements")
-async def create_firetrace_requirement(request: Request, project_id: str):
-    user = _require_firetrace(request)
-    if isinstance(user, (HTMLResponse, RedirectResponse)): return user
-    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    try:
-        Regulation38Repository(get_auth_service()).create_evidence_requirement(token, project_id, dict(form), str(user.get("id") or ""))
-        return RedirectResponse(f"/app/firetrace/projects/{project_id}/tasks", status_code=303)
-    except (ValueError, SupabaseAuthError) as exc:
-        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message, status_code=400)
-
-
-@router.post("/app/firetrace/projects/{project_id}/evidence/{requirement_id}/upload")
-async def upload_firetrace_evidence(request: Request, project_id: str, requirement_id: str,
-                                    evidence: UploadFile = File(...), description: str = Form("")):
-    user = _require_firetrace(request)
-    if isinstance(user, (HTMLResponse, RedirectResponse)): return user
-    token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    try:
-        Regulation38Repository(get_auth_service()).upload_evidence(token, project_id, requirement_id,
-            str(user.get("id") or ""), evidence.filename or "evidence.bin", evidence.content_type or "application/octet-stream",
-            await evidence.read(), description)
-        return RedirectResponse(f"/app/firetrace/projects/{project_id}/tasks", status_code=303)
-    except (ValueError, SupabaseAuthError) as exc:
-        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message, status_code=400)
-
-
-@router.post("/app/firetrace/projects/{project_id}/evidence/{submission_id}/review")
-async def review_firetrace_evidence(request: Request, project_id: str, submission_id: str):
-    user = _require_firetrace(request)
-    if isinstance(user, (HTMLResponse, RedirectResponse)): return user
-    form = await request.form(); token = str((request.scope.get("auth_session") or {}).get("access_token") or "")
-    try:
-        Regulation38Repository(get_auth_service()).review_evidence(token, project_id, submission_id,
-            str(form.get("decision") or ""), str(form.get("comment") or ""), str(user.get("id") or ""))
-        return RedirectResponse(f"/app/firetrace/projects/{project_id}/evidence", status_code=303)
-    except (ValueError, SupabaseAuthError) as exc:
-        return HTMLResponse(str(exc) if isinstance(exc, ValueError) else exc.public_message, status_code=400)
-
-
 @router.post("/app/projects/{project_id}/regulation-38/zones")
 @router.post("/app/firetrace/projects/{project_id}/zones")
 async def create_reg38_zone(request: Request, project_id: str):

@@ -17,5 +17,5 @@
 </div>
 <script id="fire-strategy-data" type="application/json">{{ fire_strategy|tojson }}</script>
 <script>window.fireStrategyConfig={projectId:{{ project_id|tojson }},canEdit:{{ fire_strategy.can_edit|tojson }}};</script><script src="/static/firetrace-plan-viewer.js"></script><script src="/static/reg38-fire-strategy.js"></script>
-<div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[5] }}">Back</a><form method="post" action="/app/firetrace/projects/{{ project_id }}/setup/complete">{% if fire_strategy.summary.complete %}<button class="button">Complete Setup &amp; Open Dashboard</button>{% else %}<button class="button" disabled>Complete Setup &amp; Open Dashboard</button><p class="completion-help">Assess every candidate (items may remain Review Required); each in-scope record requires a confirmed category. Evidence is managed after setup.</p>{% endif %}</form></div>
+<div class="wizard-actions"><a class="button ghost" href="{{ wizard_routes[5] }}">Back</a>{% if fire_strategy.summary.complete %}<a class="button" href="{{ wizard_routes[7] }}">Save & Next</a>{% else %}<button class="button" disabled>Next</button><p class="completion-help">Review every suggestion or defer it; in-scope records require a category and an evidence decision.</p>{% endif %}</div>
 {% endif %}
