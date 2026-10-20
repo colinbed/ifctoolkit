@@ -770,50 +770,14 @@ def _fields_for_entity(protocol: Dict[str, Any], protocol_entity: str, element: 
 
 
 def apply_protocol_workbook(model: Any, excel: Any) -> List[Dict[str, Any]]:
-    protocol = protocol_from_workbook(excel)
-    if not protocol or PROTOCOL_DATA_SHEET not in excel.sheet_names:
-        return []
-    data_df = pd.read_excel(excel, PROTOCOL_DATA_SHEET, usecols=lambda c: c is not None)
-    if data_df.empty:
-        return []
-    change_rows: List[Dict[str, Any]] = []
-    for _, row in data_df.iterrows():
-        guid = clean_protocol_value(row.get("GlobalId"))
-        if not guid:
-            continue
-        try:
-            element = model.by_guid(str(guid))
-        except Exception:
-            element = None
-        if element is None:
-            continue
-        fields = _fields_for_entity(protocol, str(clean_protocol_value(row.get("Protocol Entity")) or ""), element)
-        for field in fields:
-            write_cfg = field.get("write") or {}
-            if not field.get("editable", True) or not write_cfg.get("enabled"):
-                continue
-            column = _field_column(field)
-            if column not in data_df.columns:
-                continue
-            new_value = clean_protocol_value(row.get(column))
-            if new_value is None:
-                continue
-            target = write_cfg.get("target") or field.get("source") or {}
-            old_value, applied_value, status = write_source(model, element, target, new_value, write_cfg)
-            if status == "Applied" and str(clean_protocol_value(old_value) or "") == str(clean_protocol_value(applied_value) or ""):
-                continue
-            change_rows.append(
-                {
-                    "RowKey": f"{guid}:{column}",
-                    "GlobalId": guid,
-                    "StepId": element.id(),
-                    "Status": status,
-                    "Message": f"Protocol field '{column}'",
-                    "Field": column,
-                    "FromValue": old_value,
-                    "ToValue": applied_value,
-                    "Protocol": protocol.get("name", ""),
-                    "ProtocolVersion": protocol.get("version", ""),
-                }
-            )
-    return change_rows
+    """Validate protocol edits against the source and apply each target once.
+
+    The full Excel importer includes legacy candidates in the same plan. Keep
+    standalone protocol imports subject to the same shared-target validation.
+    """
+    from ifc_write_plan import build_workbook_write_plan
+
+    plan = build_workbook_write_plan(model, excel, pd.DataFrame(), pd.DataFrame())
+    if plan.errors:
+        raise ValueError("Workbook validation failed: " + "; ".join(error["message"] for error in plan.errors))
+    return plan.apply(model)
