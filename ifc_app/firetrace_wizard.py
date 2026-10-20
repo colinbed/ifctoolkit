@@ -9,10 +9,7 @@ FIRETRACE_WIZARD_STEPS = (
     ("model", "Design Model"),
     ("model-scan", "Model Scan"),
     ("spatial", "Spatial Review"),
-    ("fire-strategy", "Fire Strategy"),
-    ("evidence", "Evidence"),
-    ("compliance", "Compliance Review"),
-    ("handover", "Handover / Export"),
+    ("fire-strategy", "Fire Scope Review"),
 )
 
 # Slugs exposed by the pre-FireTrace Regulation 38 wizard.  These are aliases,
@@ -24,9 +21,8 @@ LEGACY_REGULATION_38_STEP_ALIASES = {
     "model-scan": "model-scan",
     "spaces-zones": "spatial",
     "fire-construction": "fire-strategy",
-    "plans": "evidence",
-    "information-requirements": "compliance",
-    "summary": "handover",
+    # Operational legacy steps are redirected by the route layer, not treated
+    # as setup steps.
 }
 
 
