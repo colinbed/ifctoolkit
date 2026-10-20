@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 
 from openpyxl.cell import WriteOnlyCell
+from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 
 try:
@@ -57,13 +58,15 @@ class ExtractionProfiler:
             )
 
 
-def append_header(ws: Any, columns: list[str]) -> None:
+def append_header(ws: Any, columns: list[str], readonly=()) -> None:
     """Style only the header; per-cell body styles explode openpyxl memory."""
     row = []
     for value in columns:
         cell = WriteOnlyCell(ws, value=value)
         cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.fill = PatternFill("solid", fgColor="666666" if value in readonly else "1F4E78")
+        if value in readonly:
+            cell.comment = Comment("Read-only reference. The importer resolves existing identities and does not write this field.", "IFC Toolkit")
         row.append(cell)
     ws.append(row)
 

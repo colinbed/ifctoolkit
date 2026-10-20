@@ -535,6 +535,9 @@ def _property_rels(element: Any) -> Iterable[Any]:
 
 
 def _find_pset_entity(element: Any, pset_name: str) -> Any:
+    for pset in getattr(element, "HasPropertySets", ()) or ():
+        if pset.is_a("IfcPropertySet") and pset.Name == pset_name:
+            return pset
     for rel in _property_rels(element):
         if not rel.is_a("IfcRelDefinesByProperties"):
             continue
@@ -625,7 +628,7 @@ def _set_property_value(model: Any, element: Any, source: Dict[str, Any], value:
             )
             pset.HasProperties = list(getattr(pset, "HasProperties", []) or []) + [prop]
         elif prop.is_a("IfcPropertySingleValue"):
-            prop.NominalValue = _coerce_property_value(model, value, write_cfg.get("data_type") or write_cfg.get("datatype") or "IfcLabel")
+            prop.NominalValue = _coerce_property_value(model, value, write_cfg.get("data_type") or write_cfg.get("datatype") or (prop.NominalValue.is_a() if prop.NominalValue is not None else "IfcLabel"))
         else:
             try:
                 ifcopenshell.api.run("pset.edit_pset", model, pset=pset, properties={property_name: value})

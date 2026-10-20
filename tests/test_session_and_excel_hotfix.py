@@ -58,6 +58,6 @@ def test_excel_export_reopen_and_lookup_sheet_for_ifc4(tmp_path):
     assert result["schema_detected"].startswith("IFC4")
 
     wb = load_workbook(str(out))
-    assert "_Lookups_IFC4_Entities" in wb.sheetnames
-    assert wb.defined_names.get("IfcEntityList") is not None
+    assert "SchemaEntities" in wb.sheetnames
+    assert wb.defined_names.get("OccurrenceEntities") is not None
     wb.close()

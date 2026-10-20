@@ -47,7 +47,7 @@ def main(spec_path: str, result_path: str) -> int:
             stage(spec, "worker_complete", started, workbook_rows=sum(v for v in rows.values() if isinstance(v, int)), peak_rss_mb=peak_rss_mb())
         else:
             stage(spec, "read_workbook", started)
-            result = update_ifc_from_excel(spec["input_path"], spec["excel_path"], spec["output_path"], update_mode=spec.get("update_mode", "update"), add_new=spec.get("add_new", "no"), session_id=spec["session_id"], endpoint="excel_job_worker")
+            result = update_ifc_from_excel(spec["input_path"], spec["excel_path"], spec["output_path"], update_mode=spec.get("update_mode", "update"), add_new=spec.get("add_new", "no"), session_id=spec["session_id"], endpoint="excel_job_worker", split_shared_types=spec.get("split_shared_types") is True)
             stage(spec, "write_ifc", started)
         payload = {"status": "completed", "output_file_id": Path(spec["output_path"]).name, "result": result}
         LOGGER.info("%s_COMPLETED session_id=%s input_filename=%s file_size_bytes=%s rss_mb=%s peak_rss_mb=%s elapsed_s=%.3f", event, spec["session_id"], spec["input_filename"], spec["input_size"], rss_mb(), peak_rss_mb(), time.monotonic() - started)

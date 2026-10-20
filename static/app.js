@@ -1617,6 +1617,7 @@ async function applyExcel() {
     ifc_file: ifcFile,
     excel_file: xlsFile,
     add_new: document.querySelector('input[name="addNew"]:checked')?.value || "no",
+    split_shared_types: document.getElementById("splitSharedTypes")?.checked === true,
   };
   const downloadUpdatedBtn = el("downloadUpdatedIfc");
   if (downloadUpdatedBtn) downloadUpdatedBtn.classList.add("hidden");
