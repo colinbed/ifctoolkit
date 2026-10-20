@@ -51,11 +51,11 @@ from mapping_store import (
     save_mapping_for_check,
 )
 from validation import validate_value
+from ifc_write_plan import build_workbook_write_plan
 from ifc_protocol import (
     PROTOCOL_CONFIG_SHEET,
     PROTOCOL_DATA_SHEET,
     PROTOCOL_FIELDS_SHEET,
-    apply_protocol_workbook,
     default_protocol_config,
     extract_protocol_to_dataframe,
     normalize_protocol,
@@ -2476,6 +2476,14 @@ def update_ifc_from_excel(
             APP_LOGGER.error("IFC_WRITEBACK_VALIDATION_ERROR sheet=%s row=%s field=%s message=%s",
                              item["sheet"], item["row"], item["field"], item["message"])
         raise ExcelWritebackValidationError(findings)
+    write_plan = build_workbook_write_plan(
+        ifc, xls, elements_df, cobie_df, add_new, CIVIL3D_EXTENDED_FIELDS,
+        types=types_df, project=project_df)
+    if write_plan.errors:
+        findings["errors"].extend(write_plan.errors)
+        findings["changes"] = write_plan.summary()
+        xls.close()
+        raise ExcelWritebackValidationError(findings)
     APP_LOGGER.info("IFC_WRITEBACK_VALIDATION_COMPLETED errors=0 warnings=%d", len(findings["warnings"]))
 
     project = projects[0]
@@ -2544,26 +2552,15 @@ def update_ifc_from_excel(
     for _, row in project_df.iterrows():
         dt = row["DataType"]
         if dt == "Project":
-            if pd.notna(row.get("Name")):
-                project.Name = clean_value(row["Name"]) or project.Name
-            if pd.notna(row.get("Description")):
-                project.Description = clean_value(row["Description"]) or project.Description
-            if pd.notna(row.get("Phase")):
-                project.Phase = clean_value(row["Phase"]) or project.Phase
-            if pd.notna(row.get("ProjectNumber")):
-                project_number = clean_value(row.get("ProjectNumber"))
-                if project_number is not None:
-                    project.LongName = str(project_number)
-                    APP_LOGGER.info("Updated project metadata ProjectNumber=%s", project_number)
+            pass  # Existing attributes are applied by the resolved write plan.
         elif dt == "Site":
             name = clean_value(row.get("Name"))
             desc = clean_value(row.get("Description"))
             if site is None and (add_new == "yes" or name or desc):
                 site = ifc.create_entity("IfcSite", GlobalId=new_guid(), Name=name or "Site")
             if site is not None:
-                if name is not None:
-                    site.Name = name
-                if desc is not None:
+                if "Site" not in baseline_metadata:
+                    site.Name = name or site.Name
                     site.Description = desc
                 ensure_aggregates(project, site, ifc)
                 if building is not None:
@@ -2576,10 +2573,9 @@ def update_ifc_from_excel(
                     Name=clean_value(row.get("Name")) or "Building",
                 )
             if building is not None:
-                if pd.notna(row.get("Name")):
-                    building.Name = clean_value(row["Name"]) or building.Name
-                if pd.notna(row.get("Description")):
-                    building.Description = clean_value(row["Description"]) or building.Description
+                if "Building" not in baseline_metadata:
+                    building.Name = clean_value(row.get("Name")) or building.Name
+                    building.Description = clean_value(row.get("Description")) or building.Description
                 if site is not None:
                     reassign_aggregate(site, building, ifc)
                 else:
@@ -2811,12 +2807,6 @@ def update_ifc_from_excel(
             continue
         if not elem:
             continue
-        if pd.notna(row.get("OccurrenceName")):
-            elem.Name = clean_value(row["OccurrenceName"]) or elem.Name
-        if pd.notna(row.get("OccurrenceType")):
-            elem.ObjectType = clean_value(row["OccurrenceType"]) or elem.ObjectType
-        if pd.notna(row.get("TypeDescription")):
-            elem.Description = clean_value(row["TypeDescription"]) or elem.Description
         if "IFCPresentationLayer" in elements_df.columns and pd.notna(row.get("IFCPresentationLayer")):
             _set_element_presentation_layer(ifc, elem, row.get("IFCPresentationLayer"), mode="replace")
         type_name_value = clean_value(row.get("TypeName"))
@@ -2841,8 +2831,6 @@ def update_ifc_from_excel(
                         Name=type_name,
                     )
                 ifcopenshell.api.run("type.assign_type", ifc, related_objects=[elem], relating_type=type_obj)
-            elif type_obj:
-                type_obj.Name = type_name
         if processed % 1000 == 0 or processed == total_element_rows:
             APP_LOGGER.info("IFC_WRITE_PROGRESS processed=%d total=%d percent=%.1f",
                             processed, total_element_rows,
@@ -2850,78 +2838,6 @@ def update_ifc_from_excel(
 
     log_memory_stage(stage="row iteration/update", session_id=session_id, file_name=os.path.basename(ifc_path), file_size=file_size, endpoint=endpoint, started_at=started_at)
     _check_heavy_timeout(started_at, endpoint)
-
-    if cobie_df is not None:
-        mapping_keys = set()
-        if COBIE_MAPPING is not None:
-            for pset, info in COBIE_MAPPING.items():
-                for pname, _ in info["props"]:
-                    mapping_keys.add(f"{pset}.{pname}")
-
-        candidate_cols = [
-            c
-            for c in cobie_df.columns
-            if c not in ("GlobalId", "IFCElement.Name", "IFCElementType.Name") and "." in c
-        ]
-
-        for _, row in cobie_df.iterrows():
-            guid = row.get("GlobalId")
-            if pd.isna(guid):
-                continue
-            try:
-                elem = ifc.by_guid(guid)
-            except Exception as exc:
-                APP_LOGGER.warning("IFC by_guid failed during COBie mapping guid=%s error=%s", guid, exc)
-                continue
-            if not elem:
-                continue
-
-            for col in candidate_cols:
-                val = clean_value(row.get(col))
-                if val is None:
-                    continue
-                pset, pname = col.split(".", 1)
-                pset, pname = pset.strip(), pname.strip()
-
-                psets = ifcopenshell.util.element.get_psets(elem)
-                if pset not in psets and add_new == "no":
-                    continue
-
-                pset_entity = None
-                for rel in elem.IsDefinedBy or []:
-                    if (
-                        rel.is_a("IfcRelDefinesByProperties")
-                        and rel.RelatingPropertyDefinition
-                        and getattr(rel.RelatingPropertyDefinition, "Name", "") == pset
-                    ):
-                        pset_entity = rel.RelatingPropertyDefinition
-                        break
-                if pset_entity is None and add_new == "yes":
-                    pset_entity = ifcopenshell.api.run("pset.add_pset", ifc, product=elem, name=pset)
-
-                if pset_entity:
-                    try:
-                        ifcopenshell.api.run("pset.edit_pset", ifc, pset=pset_entity, properties={pname: val})
-                    except Exception:
-                        pass
-            for field_name in CIVIL3D_EXTENDED_FIELDS:
-                val = clean_value(row.get(field_name))
-                if field_name not in row or val is None:
-                    continue
-                try:
-                    psets = ifcopenshell.util.element.get_psets(elem)
-                    if "Additional_Pset_GeneralCommon" not in psets and add_new == "yes":
-                        pset_entity = ifcopenshell.api.run("pset.add_pset", ifc, product=elem, name="Additional_Pset_GeneralCommon")
-                    else:
-                        pset_entity = None
-                        for rel in elem.IsDefinedBy or []:
-                            if rel.is_a("IfcRelDefinesByProperties") and getattr(rel.RelatingPropertyDefinition, "Name", "") == "Additional_Pset_GeneralCommon":
-                                pset_entity = rel.RelatingPropertyDefinition
-                                break
-                    if pset_entity:
-                        ifcopenshell.api.run("pset.edit_pset", ifc, pset=pset_entity, properties={field_name: val})
-                except Exception as exc:
-                    APP_LOGGER.warning("Failed to write Civil3D field %s on %s: %s", field_name, guid, exc)
 
     def set_uniclass(df, source_name):
         if df is None:
@@ -2985,7 +2901,7 @@ def update_ifc_from_excel(
     set_uniclass(uniclass_ss_df, "Uniclass Ss Systems")
     set_uniclass(uniclass_ef_df, "Uniclass EF Elements Functions")
 
-    protocol_change_rows = apply_protocol_workbook(ifc, xls)
+    protocol_change_rows = write_plan.apply(ifc)
     if protocol_change_rows:
         change_log_rows.extend(protocol_change_rows)
 
@@ -3005,6 +2921,7 @@ def update_ifc_from_excel(
     if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
         raise ValueError("Output verification failed: IFC file is missing or empty.")
     verified = ifcopenshell.open(output_path)
+    write_plan.verify(verified)
     verified_projects = verified.by_type("IfcProject")
     if len(verified_projects) != 1:
         raise ValueError(f"Output verification failed: expected exactly one IfcProject, found {len(verified_projects)}.")
@@ -3024,9 +2941,10 @@ def update_ifc_from_excel(
                 continue
             requested = clean_value(row.get(excel_field))
             actual = clean_value(getattr(entity, ifc_attr, None))
-            if requested is not None and str(actual) != str(requested):
-                raise ValueError(f"Output verification failed: expected edited {label}.{excel_field} was not written.")
-            if requested is None and label in baseline_metadata and actual != baseline_metadata[label].get(ifc_attr):
+            resolved_attribute = any(c["target_guid"] == entity.GlobalId
+                                     and c["target"].get("attribute") == ifc_attr
+                                     for c in write_plan.resolved)
+            if requested is None and not resolved_attribute and label in baseline_metadata and actual != baseline_metadata[label].get(ifc_attr):
                 raise ValueError(f"Output verification failed: blank {label}.{excel_field} did not preserve the source value.")
     if hashlib.sha256(Path(ifc_path).read_bytes()).hexdigest() != source_digest:
         raise ValueError("Source protection check failed: the source IFC was modified.")
@@ -3042,7 +2960,10 @@ def update_ifc_from_excel(
         gc.collect()
     APP_LOGGER.info("IFC_WRITE_STAGE stage=Completed")
     return {"output_path": output_path, "warnings": findings["warnings"], "errors": [],
-            "message": "IFC updated successfully."}
+            "changes": write_plan.summary(),
+            "message": (f"IFC updated: {write_plan.summary()['applied']} resolved changes applied, "
+                        f"{write_plan.summary()['unchanged']} workbook fields unchanged, "
+                        f"{write_plan.summary()['skipped']} changes skipped.")}
 
 
 # ----------------------------------------------------------------------------
