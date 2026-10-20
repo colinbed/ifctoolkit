@@ -5,9 +5,13 @@ from ifc_protocol import (
     PROTOCOL_DATA_SHEET, _fields_for_entity, _field_column, _get_type, _find_pset_entity,
     clean_protocol_value as clean, protocol_from_workbook, read_source, write_source,
 )
+import json
 import pandas as pd
+import ifcopenshell.util.element
+from ifcopenshell.guid import new as new_guid
 
 
+BASELINE_SHEET = "_IFCWritebackBaseline"
 _UNSET = object()
 
 
@@ -17,14 +21,22 @@ def _text(value):
 
 
 class WorkbookWritePlan:
-    def __init__(self, model):
+    def __init__(self, model, split_shared_types=False):
         self.model = model
+        self.split_shared_types = split_shared_types is True
+        self.splits = []
+        self.created_types = []
+        self.assignments = {}
+        self.type_members = defaultdict(set)
+        for rel in model.by_type("IfcRelDefinesByType"):
+            self.type_members[rel.RelatingType.GlobalId].update(obj.GlobalId for obj in rel.RelatedObjects)
         self.candidates = defaultdict(list)
         self.errors = []
         self.rows = []
         self.resolved = []
         self.unchanged = 0
         self.skipped = []
+        self.baselines = {}
 
     def add(self, element, target, value, sheet, row, field, config=None, baseline=_UNSET):
         value = clean(value)
@@ -61,28 +73,82 @@ class WorkbookWritePlan:
         old = read_source(self.model, element, target)
         if owner != element:
             target["kind"] = kind
-        exported = old if baseline is _UNSET else baseline
+        key = (sheet, element.GlobalId, field)
+        exported = self.baselines.setdefault(key, old if baseline is _UNSET else baseline)
         if _text(value) == _text(exported):
             self.unchanged += 1
             return
         self.candidates[identity].append(dict(
             element_guid=element.GlobalId, target_guid=getattr(owner, "GlobalId", None),
             target=target, value=value, old=old, sheet=sheet, row=row, field=field,
-            config=config or {},
+            config=config or {}, via_type=owner != element,
         ))
 
+    def _conflict(self, identity, candidates):
+        groups = defaultdict(list)
+        for c in candidates:
+            groups[_text(c["value"])].append(dict(sheet=c["sheet"], row=c["row"],
+                                                   global_id=c["element_guid"], field=c["field"]))
+        self.errors.append(dict(
+            level="error", sheet=candidates[0]["sheet"], row=None,
+            field=identity[2] or candidates[0]["field"], target_guid=identity[0],
+            attribute=identity[2] or identity[4],
+            requested_values=[dict(value=value, affected=rows) for value, rows in groups.items()],
+            affected_rows=len({(c["sheet"], c["row"]) for c in candidates}),
+            message=f"Conflicting edits for target {identity[0]} "
+                    f"{identity[2] or identity[4]}: {len(groups)} requested values, "
+                    f"{len({c['element_guid'] for c in candidates})} affected GUIDs."))
+
     def resolve(self):
-        for identity, candidates in self.candidates.items():
-            values = {_text(c["value"]) for c in candidates}
-            if len(values) > 1:
-                detail = "; ".join(
-                    f'{c["sheet"]} row {c["row"]} GUID {c["element_guid"]} '
-                    f'{c["field"]}={c["value"]!r}' for c in candidates)
+        # First validate names for each occurrence, before allowing shared-type grouping.
+        if self.split_shared_types:
+            names = defaultdict(list)
+            for identity, candidates in self.candidates.items():
+                if identity[1:3] != ("attribute", "Name") or identity[0] not in self.type_members:
+                    continue
                 for c in candidates:
-                    self.errors.append(dict(
-                        level="error", sheet=c["sheet"], row=c["row"], field=c["field"],
-                        global_id=c["element_guid"], target_guid=c["target_guid"],
-                        value=c["value"], message=f"Conflicting edits for target {identity[0]}: {detail}"))
+                    members = [c["element_guid"]] if c["via_type"] else self.type_members[identity[0]]
+                    for guid in members:
+                        names[(identity[0], guid)].append(c)
+            contradictory = defaultdict(list)
+            for (type_guid, guid), candidates in names.items():
+                if len({_text(c["value"]) for c in candidates}) > 1:
+                    contradictory[type_guid].extend(candidates)
+            for type_guid, candidates in contradictory.items():
+                self._conflict((type_guid, "attribute", "Name", "", ""), candidates)
+            if self.errors:
+                return self.errors
+            requested = {key: _text(values[0]["value"]) for key, values in names.items()}
+            for type_guid, members in self.type_members.items():
+                original = self.model.by_guid(type_guid)
+                groups = defaultdict(list)
+                for guid in members:
+                    groups[requested.get((type_guid, guid), _text(original.Name))].append(guid)
+                if len(groups) <= 1:
+                    continue
+                for name, guids in groups.items():
+                    if name == _text(original.Name):
+                        continue
+                    clone_guid = new_guid()
+                    self.splits.append(dict(source_guid=type_guid, new_guid=clone_guid,
+                                            name=name, occurrence_guids=sorted(guids),
+                                            reassigned_occurrence_count=len(guids)))
+                    for guid in guids:
+                        self.assignments[guid] = clone_guid
+            routed = defaultdict(list)
+            for identity, candidates in self.candidates.items():
+                for c in candidates:
+                    destinations = [self.assignments.get(c["element_guid"], c["target_guid"])
+                                    if c["via_type"] else c["target_guid"]]
+                    if not c["via_type"] and c["target_guid"] in self.type_members:
+                        destinations += [split["new_guid"] for split in self.splits
+                                         if split["source_guid"] == c["target_guid"]]
+                    for destination in destinations:
+                        routed[(destination,) + identity[1:]].append(dict(c, target_guid=destination))
+            self.candidates = routed
+        for identity, candidates in self.candidates.items():
+            if len({_text(c["value"]) for c in candidates}) > 1:
+                self._conflict(identity, candidates)
             else:
                 chosen = dict(candidates[0])
                 chosen["config"] = dict(chosen["config"])
@@ -93,12 +159,52 @@ class WorkbookWritePlan:
                 self.resolved.append(chosen)
         return self.errors
 
+    def _apply_splits(self, model):
+        util = ifcopenshell.util.element
+        for split in self.splits:
+            source = model.by_guid(split["source_guid"])
+            clone = util.copy(model, source)
+            clone.GlobalId = split["new_guid"]
+            # Representation maps remain shared; no occurrence geometry is remapped.
+            # Property graphs are copied independently for every new type.
+            clone.HasPropertySets = tuple(util.copy_deep(model, pset)
+                                          for pset in (source.HasPropertySets or ()))
+            for rel in source.HasAssociations or ():
+                if not (rel.is_a("IfcRelAssociatesMaterial") or rel.is_a("IfcRelAssociatesClassification")):
+                    continue
+                association = util.copy(model, rel)
+                association.RelatedObjects = [clone]
+                # Keep material/classification definitions and their inverse
+                # styles/metadata intact; the association itself is independent.
+            occurrences = [model.by_guid(guid) for guid in split["occurrence_guids"]]
+            members = set(occurrences)
+            relationships = [rel for rel in model.get_inverse(source)
+                             if rel.is_a("IfcRelDefinesByType") and members.intersection(rel.RelatedObjects)]
+            # Only change relationships. type.assign_type also clears occurrence
+            # ObjectType/PredefinedType, which is inappropriate for a name split.
+            assigned = util.copy(model, relationships[0])
+            assigned.RelatingType = clone
+            assigned.RelatedObjects = occurrences
+            for relationship in relationships:
+                remaining = [obj for obj in relationship.RelatedObjects if obj not in members]
+                if remaining:
+                    relationship.RelatedObjects = remaining
+                else:
+                    model.remove(relationship)
+            self.created_types.append({k: v for k, v in split.items() if k != "occurrence_guids"})
+
     def apply(self, model):
         if self.errors:
             raise ValueError("Cannot apply a conflicting workbook write plan")
+        self._apply_splits(model)
         for c in self.resolved:
             element = model.by_guid(c["target_guid"] or c["element_guid"])
-            _, applied, status = write_source(model, element, c["target"], c["value"], c["config"])
+            current = read_source(model, element, c["target"])
+            if _text(current) == _text(c["value"]):
+                applied, status = current, "Unchanged"
+                self.unchanged += 1
+            else:
+                _, applied, status = write_source(model, element, c["target"], c["value"], c["config"])
             self.rows.append(dict(
                 GlobalId=c["element_guid"], TargetGlobalId=c["target_guid"],
                 Sheet=c["sheet"], Row=c["row"], Field=c["field"],
@@ -110,22 +216,45 @@ class WorkbookWritePlan:
         return self.rows + self.skipped
 
     def verify(self, model):
+        if self.splits:
+            for original_guid, members in self.type_members.items():
+                for guid in members:
+                    expected = self.assignments.get(guid, original_guid)
+                    assigned = _get_type(model.by_guid(guid))
+                    if assigned is None or assigned.GlobalId != expected:
+                        raise ValueError(f"Output verification failed for type assignment {guid}")
+        for split in self.splits:
+            for guid in split["occurrence_guids"]:
+                assigned = _get_type(model.by_guid(guid))
+                if assigned is None or assigned.GlobalId != split["new_guid"] or _text(assigned.Name) != split["name"]:
+                    raise ValueError(f"Output verification failed for split assignment {guid}")
         for c, result in zip(self.resolved, self.rows):
-            if result["Status"] != "Applied":
+            if result["Status"] not in {"Applied", "Unchanged"}:
                 continue
             actual = read_source(model, model.by_guid(c["target_guid"] or c["element_guid"]), c["target"])
             if _text(actual) != _text(result["ToValue"]):
                 raise ValueError(f'Output verification failed for GUID {c["target_guid"]}: '
                                  f'{c["field"]} expected {result["ToValue"]!r}, got {actual!r}')
 
+    def baseline_dataframe(self):
+        return pd.DataFrame([dict(Sheet=sheet, GlobalId=guid, Field=field,
+                                  Value=json.dumps(value, default=str))
+                             for (sheet, guid, field), value in self.baselines.items()])
+
     def summary(self):
         return dict(applied=sum(r["Status"] == "Applied" for r in self.rows),
                     unchanged=self.unchanged, conflicting=len(self.errors),
+                    affected_conflict_rows=len({(row["sheet"], row["row"])
+                        for error in self.errors for group in error["requested_values"] for row in group["affected"]}),
+                    created_types=self.created_types,
                     skipped=len(self.skipped) + sum(r["Status"].startswith("Skipped") for r in self.rows))
 
 
-def build_workbook_write_plan(model, excel, elements, cobie, add_new="no", civil_fields=(), types=None, project=None):
-    plan = WorkbookWritePlan(model)
+def build_workbook_write_plan(model, excel, elements, cobie, add_new="no", civil_fields=(), types=None, project=None, split_shared_types=False):
+    plan = WorkbookWritePlan(model, split_shared_types)
+    if BASELINE_SHEET in excel.sheet_names:
+        for _, row in pd.read_excel(excel, BASELINE_SHEET, keep_default_na=False).iterrows():
+            plan.baselines[(row["Sheet"], row["GlobalId"], row["Field"])] = json.loads(row["Value"])
 
     def lookup(guid):
         try:
