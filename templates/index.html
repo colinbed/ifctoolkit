@@ -96,8 +96,8 @@
                   <label><input type="radio" name="updateMode" value="refresh" /> Refresh</label>
                   <label><input type="radio" name="addNew" value="no" checked /> No new</label>
                   <label><input type="radio" name="addNew" value="yes" /> Add new</label>
+                  <label><input type="checkbox" id="splitSharedTypes" /> Split shared types for conflicting instance requests</label>
                 </div>
-                <label><input type="checkbox" id="splitSharedTypes" /> Split shared types when different type names are requested</label>
                 <button class="btn" id="applyExcel" style="margin-top: 8px">Apply Excel → IFC</button>
               </div>
             </div>
@@ -317,7 +317,7 @@
           excel_file: xlsFile,
           update_mode: document.querySelector('input[name="updateMode"]:checked').value,
           add_new: document.querySelector('input[name="addNew"]:checked').value,
-          split_shared_types: el("splitSharedTypes").checked,
+          split_shared_types: document.getElementById("splitSharedTypes")?.checked === true,
         };
         const resp = await fetch(`/api/session/${state.sessionId}/excel/update`, {
           method: "POST",

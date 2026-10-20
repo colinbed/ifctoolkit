@@ -42,7 +42,10 @@ def edit(path, changes):
     for sheet_name, guid, field, value in changes:
         sheet = wb[sheet_name]
         columns = {c.value: c.column for c in sheet[1]}
-        row = next(i for i in range(2, sheet.max_row + 1) if sheet.cell(i, columns["GlobalId"]).value == guid)
+        identity = "Type GlobalId" if sheet_name == "Types" else "GlobalId"
+        row = next(i for i in range(2, sheet.max_row + 1) if sheet.cell(i, columns[identity]).value == guid)
+        aliases = {"OccurrenceName": "Instance Name", "TypeName": "Type Name", "OccurrenceType": "Object Type", "Name": "Type Name" if sheet_name == "Types" else "Instance Name"}
+        field = field if field in columns else aliases.get(field, field)
         sheet.cell(row, columns[field]).value = value
     wb.save(path)
     wb.close()

@@ -628,7 +628,7 @@ def _set_property_value(model: Any, element: Any, source: Dict[str, Any], value:
             )
             pset.HasProperties = list(getattr(pset, "HasProperties", []) or []) + [prop]
         elif prop.is_a("IfcPropertySingleValue"):
-            prop.NominalValue = _coerce_property_value(model, value, write_cfg.get("data_type") or write_cfg.get("datatype") or "IfcLabel")
+            prop.NominalValue = _coerce_property_value(model, value, write_cfg.get("data_type") or write_cfg.get("datatype") or (prop.NominalValue.is_a() if prop.NominalValue is not None else "IfcLabel"))
         else:
             try:
                 ifcopenshell.api.run("pset.edit_pset", model, pset=pset, properties={property_name: value})
