@@ -1617,7 +1617,9 @@ async function applyExcel() {
     ifc_file: ifcFile,
     excel_file: xlsFile,
     add_new: document.querySelector('input[name="addNew"]:checked')?.value || "no",
+    split_shared_types: el("splitSharedTypes")?.checked === true,
   };
+  el("excelConflictDetails")?.remove();
   const downloadUpdatedBtn = el("downloadUpdatedIfc");
   if (downloadUpdatedBtn) downloadUpdatedBtn.classList.add("hidden");
   return withProcessing("Applying Excel updates…", async () => {
@@ -1634,6 +1636,19 @@ async function applyExcel() {
       `${item.sheet}${item.row ? ` row ${item.row}` : ""}${item.field ? `, ${item.field}` : ""}: ${item.message}`
     ).join("\n");
     el("excelStatus").textContent = `Complete — Updated IFC: ${job.output_file_id}${warningText ? `\nWarnings:\n${warningText}` : ""}`;
+    const created = job.result?.changes?.created_types || [];
+    if (created.length) {
+      const details = document.createElement("details");
+      details.id = "excelConflictDetails";
+      const summary = document.createElement("summary");
+      summary.textContent = `${created.length} shared types created`;
+      const content = document.createElement("pre");
+      content.textContent = created.map((item) =>
+        `${item.source_guid} → ${item.new_guid}: ${item.name} (${item.reassigned_occurrence_count} occurrences)`
+      ).join("\n");
+      details.append(summary, content);
+      el("excelStatus").after(details);
+    }
     if (downloadUpdatedBtn) downloadUpdatedBtn.classList.remove("hidden");
     await refreshFiles();
   });
@@ -1651,11 +1666,30 @@ async function pollExcelJob(jobId, kind) {
     if (job.status === "completed") return job;
     if (job.status === "failed") {
       const retry = job.recoverable ? " You can retry." : "";
-      const details = (job.errors || []).map((item) =>
-        `${item.sheet}${item.row ? ` row ${item.row}` : ""}${item.field ? `, ${item.field}` : ""}: ${item.message}`
-      ).join("; ");
-      const message = `${job.message || job.error || "Processing failed."}${details ? ` ${details}` : ""}${retry}`;
+      const errors = job.errors || [];
+      const conflicts = errors.filter((item) => item.requested_values);
+      const affected = new Set(conflicts.flatMap((item) => item.requested_values.flatMap((group) =>
+        group.affected.map((row) => `${row.sheet}:${row.row}`))));
+      const message = conflicts.length
+        ? `Workbook validation failed: ${conflicts.length} conflicts affecting ${affected.size} rows.${retry}`
+        : `${job.message || job.error || "Processing failed."}${retry}`;
       el("excelStatus").textContent = message;
+      if (errors.length) {
+        el("excelConflictDetails")?.remove();
+        const details = document.createElement("details");
+        details.id = "excelConflictDetails";
+        const summary = document.createElement("summary");
+        summary.textContent = "Validation details";
+        const content = document.createElement("pre");
+        content.textContent = errors.map((item) => {
+          const groups = (item.requested_values || []).map((group) =>
+            `${JSON.stringify(group.value)}: ` + group.affected.map((row) =>
+              `${row.sheet} row ${row.row}, GUID ${row.global_id}, ${row.field}`).join("; "));
+          return [item.message, ...groups].join("\n");
+        }).join("\n\n");
+        details.append(summary, content);
+        el("excelStatus").after(details);
+      }
       throw new Error(message);
     }
     el("excelStatus").textContent = job.status === "queued" ? stages[0] : stages[Math.min(1 + Math.floor(tick / 2), stages.length - 1)];

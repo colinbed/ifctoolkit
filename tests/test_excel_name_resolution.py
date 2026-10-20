@@ -95,9 +95,12 @@ def test_cross_sheet_conflict_is_structured_and_atomic(exported):
     with pytest.raises(ExcelWritebackValidationError) as caught:
         update_ifc_from_excel(str(source), str(workbook), str(output))
     errors = caught.value.findings["errors"]
-    assert {e["sheet"] for e in errors} == {"Elements", "ProtocolData"}
-    assert {e["value"] for e in errors} == {"ONE", "TWO"}
-    assert all(e["row"] >= 2 and e["global_id"] == guids[0] for e in errors)
+    assert len(errors) == 1
+    groups = errors[0]["requested_values"]
+    affected = [row for group in groups for row in group["affected"]]
+    assert {row["sheet"] for row in affected} == {"Elements", "ProtocolData"}
+    assert {group["value"] for group in groups} == {"ONE", "TWO"}
+    assert all(row["row"] >= 2 and row["global_id"] == guids[0] for row in affected)
     assert not output.exists()
 
 
@@ -108,10 +111,13 @@ def test_shared_type_conflict_reports_type_and_occurrence_rows(exported, sheet, 
     with pytest.raises(ExcelWritebackValidationError) as caught:
         update_ifc_from_excel(str(source), str(workbook), str(output))
     errors = caught.value.findings["errors"]
-    assert {e["global_id"] for e in errors} == set(guids)
-    assert {e["target_guid"] for e in errors} == {type_guid}
-    assert len({e["row"] for e in errors}) == 2
-    assert all(type_guid in e["message"] and all(g in e["message"] for g in guids) for e in errors)
+    assert len(errors) == 1
+    affected = [row for group in errors[0]["requested_values"] for row in group["affected"]]
+    assert {row["global_id"] for row in affected} == set(guids)
+    assert errors[0]["target_guid"] == type_guid
+    assert len({row["row"] for row in affected}) == 2
+    assert type_guid in errors[0]["message"]
+    assert len(errors[0]["message"]) < 200
     assert not output.exists()
 
 
@@ -146,7 +152,7 @@ def test_shared_type_cross_sheet_conflict(exported):
         update_ifc_from_excel(str(source), str(workbook), str(output))
     assert {e["target_guid"] for e in caught.value.findings["errors"]} == {type_guid}
     assert caught.value.findings["changes"]["applied"] == 0
-    assert caught.value.findings["changes"]["conflicting"] == 2
+    assert caught.value.findings["changes"]["conflicting"] == 1
     assert not output.exists()
 
 

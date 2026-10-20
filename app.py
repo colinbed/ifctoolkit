@@ -51,7 +51,7 @@ from mapping_store import (
     save_mapping_for_check,
 )
 from validation import validate_value
-from ifc_write_plan import build_workbook_write_plan
+from ifc_write_plan import BASELINE_SHEET, build_workbook_write_plan
 from ifc_protocol import (
     PROTOCOL_CONFIG_SHEET,
     PROTOCOL_DATA_SHEET,
@@ -2397,6 +2397,7 @@ def update_ifc_from_excel(
     update_mode="update",
     add_new="no",
     *,
+    split_shared_types: bool = False,
     session_id: Optional[str] = None,
     endpoint: str = "excel/update",
     proxy_mapping_repository: Optional[Any] = None,
@@ -2478,7 +2479,7 @@ def update_ifc_from_excel(
         raise ExcelWritebackValidationError(findings)
     write_plan = build_workbook_write_plan(
         ifc, xls, elements_df, cobie_df, add_new, CIVIL3D_EXTENDED_FIELDS,
-        types=types_df, project=project_df)
+        types=types_df, project=project_df, split_shared_types=split_shared_types)
     if write_plan.errors:
         findings["errors"].extend(write_plan.errors)
         findings["changes"] = write_plan.summary()
@@ -2953,9 +2954,17 @@ def update_ifc_from_excel(
     APP_LOGGER.info("IFC_WRITEBACK_WRITE_COMPLETED output_path=%s filename=%s size_bytes=%d", output_path, os.path.basename(output_path), output_size)
 
     xls.close()
-    if change_log_rows:
-        with pd.ExcelWriter(xls_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    with pd.ExcelWriter(xls_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        if change_log_rows:
             pd.DataFrame(change_log_rows).to_excel(writer, sheet_name="ChangeLog", index=False)
+        write_plan.baseline_dataframe().to_excel(writer, sheet_name=BASELINE_SHEET, index=False)
+        writer.book[BASELINE_SHEET].sheet_state = "hidden"
+        created_types = write_plan.summary()["created_types"]
+        pd.DataFrame(created_types, columns=["source_guid", "new_guid", "name", "reassigned_occurrence_count"]).to_excel(
+            writer, sheet_name="TypeSplits", index=False)
+        for split in created_types:
+            APP_LOGGER.info("IFC_TYPE_SPLIT source_guid=%s new_guid=%s name=%s reassigned_occurrence_count=%d",
+                            split["source_guid"], split["new_guid"], split["name"], split["reassigned_occurrence_count"])
     if gc is not None:
         gc.collect()
     APP_LOGGER.info("IFC_WRITE_STAGE stage=Completed")
@@ -8577,7 +8586,8 @@ def excel_apply(session_id: str, payload: Dict[str, Any] = Body(...)):
         spec={"kind": "update", "session_id": session_id, "input_filename": sanitize_filename(ifc_name),
               "input_size": os.path.getsize(in_path), "input_path": in_path, "excel_path": xls_path,
               "output_path": out_path, "update_mode": payload.get("update_mode", "update"),
-              "add_new": payload.get("add_new", "no")},
+              "add_new": payload.get("add_new", "no"),
+              "split_shared_types": payload.get("split_shared_types") is True},
     )
     return {key: job[key] for key in ("job_id", "status", "progress", "message")}
 
@@ -8588,7 +8598,7 @@ def get_excel_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {key: job.get(key) for key in (
-        "job_id", "status", "progress", "message", "output_file_id", "error", "errors", "warnings", "recoverable", "kind"
+        "job_id", "status", "progress", "message", "output_file_id", "error", "errors", "warnings", "recoverable", "kind", "result"
     )}
 
 

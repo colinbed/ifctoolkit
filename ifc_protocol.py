@@ -535,6 +535,9 @@ def _property_rels(element: Any) -> Iterable[Any]:
 
 
 def _find_pset_entity(element: Any, pset_name: str) -> Any:
+    for pset in getattr(element, "HasPropertySets", ()) or ():
+        if pset.is_a("IfcPropertySet") and getattr(pset, "Name", "") == pset_name:
+            return pset
     for rel in _property_rels(element):
         if not rel.is_a("IfcRelDefinesByProperties"):
             continue
