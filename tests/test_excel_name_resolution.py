@@ -42,7 +42,7 @@ def edit(path, changes):
     for sheet_name, guid, field, value in changes:
         sheet = wb[sheet_name]
         columns = {c.value: c.column for c in sheet[1]}
-        row = next(i for i in range(2, sheet.max_row + 1) if sheet.cell(i, columns["GlobalId"]).value == guid)
+        row = next(i for i in range(2, sheet.max_row + 1) if sheet.cell(i, columns.get("GlobalId", columns.get("Type GlobalId"))).value == guid)
         sheet.cell(row, columns[field]).value = value
     wb.save(path)
     wb.close()
@@ -54,9 +54,9 @@ def test_name_edits_resolve_and_survive_reopen(exported, sheets):
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     changes = []
     for sheet in sheets:
-        changes.append((sheet, guids[0], "OccurrenceName" if sheet == "Elements" else "Asset Name", "EST-BEM-00001"))
+        changes.append((sheet, guids[0], "Instance Name" if sheet == "Elements" else "Asset Name", "EST-BEM-00001"))
         for guid in guids:
-            changes.append((sheet, guid, "TypeName" if sheet == "Elements" else "Type Name", "EST_S_Beam_Beam001"))
+            changes.append((sheet, guid, "Type Name" if sheet == "Elements" else "Type Name", "EST_S_Beam_Beam001"))
     changes.append(("COBieMapping", guids[0], "COBie_Component.Name", "Edited COBie name"))
     edit(workbook, changes)
     result = update_ifc_from_excel(str(source), str(workbook), str(output))
@@ -90,7 +90,7 @@ def test_name_edits_resolve_and_survive_reopen(exported, sheets):
 
 def test_cross_sheet_conflict_is_structured_and_atomic(exported):
     source, workbook, output, guids, _ = exported
-    edit(workbook, [("Elements", guids[0], "OccurrenceName", "ONE"),
+    edit(workbook, [("Elements", guids[0], "Instance Name", "ONE"),
                     ("ProtocolData", guids[0], "Asset Name", "TWO")])
     with pytest.raises(ExcelWritebackValidationError) as caught:
         update_ifc_from_excel(str(source), str(workbook), str(output))
@@ -104,7 +104,7 @@ def test_cross_sheet_conflict_is_structured_and_atomic(exported):
     assert not output.exists()
 
 
-@pytest.mark.parametrize("sheet,column", [("Elements", "TypeName"), ("ProtocolData", "Type Name")])
+@pytest.mark.parametrize("sheet,column", [("Elements", "Type Name"), ("ProtocolData", "Type Name")])
 def test_shared_type_conflict_reports_type_and_occurrence_rows(exported, sheet, column):
     source, workbook, output, guids, type_guid = exported
     edit(workbook, [(sheet, guid, column, f"TYPE-{i}") for i, guid in enumerate(guids)])
@@ -125,7 +125,7 @@ def test_shared_type_conflict_reports_type_and_occurrence_rows(exported, sheet, 
 def test_blank_names_preserve_source(exported, blank):
     source, workbook, output, guids, type_guid = exported
     edit(workbook, [(sheet, guid, column, blank) for guid in guids
-                    for sheet, column in [("Elements", "OccurrenceName"), ("Elements", "TypeName"),
+                    for sheet, column in [("Elements", "Instance Name"), ("Elements", "Type Name"),
                                            ("ProtocolData", "Asset Name"), ("ProtocolData", "Type Name")]])
     result = update_ifc_from_excel(str(source), str(workbook), str(output))
     after = ifcopenshell.open(str(output))
@@ -136,7 +136,7 @@ def test_blank_names_preserve_source(exported, blank):
 
 def test_one_occurrence_can_rename_shared_type(exported):
     source, workbook, output, guids, type_guid = exported
-    edit(workbook, [("Elements", guids[0], "TypeName", "SHARED")])
+    edit(workbook, [("Elements", guids[0], "Type Name", "SHARED")])
     result = update_ifc_from_excel(str(source), str(workbook), str(output))
     model = ifcopenshell.open(str(output))
     assert all(ifcopenshell.util.element.get_type(model.by_guid(g)).Name == "SHARED" for g in guids)
@@ -146,7 +146,7 @@ def test_one_occurrence_can_rename_shared_type(exported):
 
 def test_shared_type_cross_sheet_conflict(exported):
     source, workbook, output, guids, type_guid = exported
-    edit(workbook, [("Elements", guids[0], "TypeName", "ONE"),
+    edit(workbook, [("Elements", guids[0], "Type Name", "ONE"),
                     ("ProtocolData", guids[1], "Type Name", "TWO")])
     with pytest.raises(ExcelWritebackValidationError) as caught:
         update_ifc_from_excel(str(source), str(workbook), str(output))
@@ -158,14 +158,14 @@ def test_shared_type_cross_sheet_conflict(exported):
 
 def test_legacy_object_type_edit_with_unchanged_protocol(exported):
     source, workbook, output, guids, _ = exported
-    edit(workbook, [("Elements", guids[0], "OccurrenceType", "Edited ObjectType")])
+    edit(workbook, [("Elements", guids[0], "Object Type", "Edited ObjectType")])
     update_ifc_from_excel(str(source), str(workbook), str(output))
     assert ifcopenshell.open(str(output)).by_guid(guids[0]).ObjectType == "Edited ObjectType"
 
 
 def test_types_name_edit_is_independent_of_apply_change(exported):
     source, workbook, output, _, type_guid = exported
-    edit(workbook, [("Types", type_guid, "Name", "TYPE EDIT")])
+    edit(workbook, [("Types", type_guid, "Type Name", "TYPE EDIT")])
     update_ifc_from_excel(str(source), str(workbook), str(output))
     assert ifcopenshell.open(str(output)).by_guid(type_guid).Name == "TYPE EDIT"
 

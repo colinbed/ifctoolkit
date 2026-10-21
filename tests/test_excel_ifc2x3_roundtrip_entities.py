@@ -3,7 +3,9 @@ import ifcopenshell
 from ifcopenshell.guid import new as new_guid
 from openpyxl import load_workbook
 
-from app import extract_to_excel, update_ifc_from_excel
+import pytest
+from app import extract_to_excel, update_ifc_from_excel, ExcelWritebackValidationError
+from test_excel_name_resolution import edit
 
 
 def _build_ifc2x3_model(tmp_path):
@@ -18,193 +20,87 @@ def _build_ifc2x3_model(tmp_path):
     proxy_type = model.create_entity("IfcBuildingElementProxyType", GlobalId=new_guid(), Name="ProxyType", PredefinedType="NOTDEFINED")
     wall_type = model.create_entity("IfcWallType", GlobalId=new_guid(), Name="WallType", PredefinedType="NOTDEFINED")
     model.create_entity("IfcRelDefinesByType", GlobalId=new_guid(), RelatedObjects=[proxy], RelatingType=proxy_type)
+    wall = model.create_entity("IfcWall", GlobalId=new_guid(), Name="Wall")
+    model.create_entity("IfcRelDefinesByType", GlobalId=new_guid(), RelatedObjects=[wall], RelatingType=wall_type)
     return model, proxy, proxy_type, wall_type
 
 
+
+def export(tmp_path):
+    model, proxy, proxy_type, wall_type = _build_ifc2x3_model(tmp_path)
+    paths = [tmp_path / n for n in ["source.ifc", "book.xlsx", "output.ifc"]]
+    model.write(str(paths[0])); extract_to_excel(str(paths[0]), str(paths[1]))
+    return paths, proxy.GlobalId, proxy_type.GlobalId, wall_type.GlobalId
+
+
 def test_export_includes_types_raw_entities_and_dropdowns(tmp_path):
-    model, proxy, proxy_type, _ = _build_ifc2x3_model(tmp_path)
-    src = tmp_path / "src.ifc"
-    xlsx = tmp_path / "out.xlsx"
-    model.write(str(src))
-
-    extract_to_excel(str(src), str(xlsx))
-
-    xls = pd.ExcelFile(xlsx)
-    assert "Types" in xls.sheet_names
-    assert "RawEntities" in xls.sheet_names
-
-    elements = pd.read_excel(xls, "Elements")
-    types = pd.read_excel(xls, "Types")
-    raw = pd.read_excel(xls, "RawEntities")
-
-    assert "IfcBuildingElementProxy" in set(elements["CurrentEntity"])
-    assert proxy.GlobalId in set(elements["GlobalId"])
-    assert "IfcBuildingElementProxyType" in set(types["CurrentEntity"])
-    assert proxy_type.GlobalId in set(types["GlobalId"])
-    assert "RawStepLine" in raw.columns
-    for required_col in ("ExpressLine", "GlobalId", "IfcEntity", "PredefinedType", "Name", "ObjectType", "TypeName", "SourceFile"):
-        assert required_col in elements.columns
-
-    wb = load_workbook(str(xlsx))
-    assert wb["_Lookups_IFC2X3_Entities"].sheet_state == "hidden"
-    assert wb["_Lookups_IFC2X3_Predefs"].sheet_state == "hidden"
-    assert wb["_Lookups_IFC2X3_Map"].sheet_state == "hidden"
+    paths, proxy, typ, _ = export(tmp_path)
+    elements = pd.read_excel(paths[1], "Elements")
+    types = pd.read_excel(paths[1], "Types")
+    assert proxy in set(elements['GlobalId'])
+    assert typ in set(types['Type GlobalId'])
+    assert 'IfcBuildingElementProxy' in set(elements['IFC Entity'])
+    assert 'RawStepLine' in pd.read_excel(paths[1], 'RawEntities').columns
+    assert 'Name' not in elements and 'TypeDescription' not in elements
+    assert elements.loc[elements.GlobalId == proxy, 'Predefined Type'].iloc[0] == 'Unavailable'
 
 
 def test_workbook_lookup_validations_roundtrip_safe(tmp_path):
-    model, _, _, _ = _build_ifc2x3_model(tmp_path)
-    src = tmp_path / "src.ifc"
-    xlsx = tmp_path / "out.xlsx"
-    rewritten = tmp_path / "rewritten.xlsx"
-    model.write(str(src))
-
-    extract_to_excel(str(src), str(xlsx))
-
-    wb = load_workbook(str(xlsx))
-    assert {"Elements", "Properties", "_Lookups_IFC2X3_Entities", "_Lookups_IFC2X3_Predefs", "_Lookups_IFC2X3_Map"}.issubset(set(wb.sheetnames))
-    assert wb.defined_names.get("IfcEntityList") is not None
-    assert wb.defined_names.get("PredefinedTypeList") is not None
-
-    elements_ws = wb["Elements"]
-    validations = list(elements_ws.data_validations.dataValidation)
-    formulas = {dv.formula1 for dv in validations}
-    assert "=IfcEntityList" in formulas
-    assert "=PredefinedTypeList" in formulas
-    assert all(dv.sqref for dv in validations)
-
-    wb.save(str(rewritten))
+    paths, *_ = export(tmp_path)
+    wb = load_workbook(paths[1])
+    assert wb['SchemaReference'].sheet_state == 'visible'
+    assert wb.defined_names.get('IFC_Occurrences') is not None
+    assert wb.defined_names.get('IFC_Enum_IfcWallType') is not None
+    formulas = {dv.formula1 for dv in wb['Elements'].data_validations.dataValidation}
+    assert '=IFC_Occurrences' in formulas
+    assert any('INDIRECT' in formula for formula in formulas)
+    wb.save(paths[1]); wb.close()
+    reopened = load_workbook(paths[1]); assert len(reopened['Elements'].data_validations.dataValidation) == 2; reopened.close()
 
 
 def test_reupload_predefined_only_and_valid_type_reclassification(tmp_path):
-    model, _, proxy_type, _ = _build_ifc2x3_model(tmp_path)
-    src = tmp_path / "src.ifc"
-    xlsx = tmp_path / "out.xlsx"
-    updated = tmp_path / "updated.ifc"
-    model.write(str(src))
-    extract_to_excel(str(src), str(xlsx))
-
-    xls = pd.ExcelFile(xlsx)
-    elements = pd.read_excel(xls, "Elements")
-    types = pd.read_excel(xls, "Types")
-    props = pd.read_excel(xls, "Properties")
-    cobie = pd.read_excel(xls, "COBieMapping")
-    project = pd.read_excel(xls, "ProjectData")
-    raw_entities = pd.read_excel(xls, "RawEntities")
-    uniclass_pr = pd.read_excel(xls, "Uniclass_Pr")
-    uniclass_ss = pd.read_excel(xls, "Uniclass_Ss")
-    uniclass_ef = pd.read_excel(xls, "Uniclass_EF")
-    xls.close()
-
-    wall_type_row = types[types["CurrentEntity"] == "IfcWallType"].iloc[0]
-    types.loc[types["RowKey"] == wall_type_row["RowKey"], "TargetPredefinedType"] = "USERDEFINED"
-    types.loc[types["RowKey"] == wall_type_row["RowKey"], "ApplyChange"] = "Yes"
-
-    type_row = types[types["CurrentEntity"] == "IfcBuildingElementProxyType"].iloc[0]
-    types.loc[types["RowKey"] == type_row["RowKey"], "TargetEntity"] = "IfcWallType"
-    types.loc[types["RowKey"] == type_row["RowKey"], "ApplyChange"] = "Yes"
-
-    with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
-        project.to_excel(writer, sheet_name="ProjectData", index=False)
-        elements.to_excel(writer, sheet_name="Elements", index=False)
-        types.to_excel(writer, sheet_name="Types", index=False)
-        raw_entities.to_excel(writer, sheet_name="RawEntities", index=False)
-        props.to_excel(writer, sheet_name="Properties", index=False)
-        cobie.to_excel(writer, sheet_name="COBieMapping", index=False)
-        uniclass_pr.to_excel(writer, sheet_name="Uniclass_Pr", index=False)
-        uniclass_ss.to_excel(writer, sheet_name="Uniclass_Ss", index=False)
-        uniclass_ef.to_excel(writer, sheet_name="Uniclass_EF", index=False)
-
-    update_ifc_from_excel(str(src), str(xlsx), str(updated), add_new="yes")
-    revised = ifcopenshell.open(str(updated))
-
-    updated_proxy_type = revised.by_guid(proxy_type.GlobalId)
-    assert updated_proxy_type.is_a() == "IfcWallType"
-
-    updated_wall_type = revised.by_guid(wall_type_row["GlobalId"])
-    assert updated_wall_type.PredefinedType == "USERDEFINED"
+    paths, proxy, typ, wall_type = export(tmp_path)
+    edit(paths[1], [('Types', wall_type, 'Predefined Type', 'USERDEFINED'),
+                    ('Types', wall_type, 'Element Type', 'Custom wall'),
+                    ('Types', typ, 'IFC Entity', 'IfcWallType')])
+    update_ifc_from_excel(*map(str, paths))
+    revised = ifcopenshell.open(str(paths[2]))
+    assert revised.by_guid(typ).is_a() == 'IfcWallType'
+    assert revised.by_guid(proxy).is_a() == 'IfcWall'
+    assert revised.by_guid(wall_type).PredefinedType == 'USERDEFINED'
+    assert revised.by_guid(wall_type).ElementType == 'Custom wall'
 
 
 def test_reject_invalid_entity_predefined_combo(tmp_path):
-    model, _, proxy_type, _ = _build_ifc2x3_model(tmp_path)
-    src = tmp_path / "src.ifc"
-    xlsx = tmp_path / "out.xlsx"
-    updated = tmp_path / "updated.ifc"
-    model.write(str(src))
-    extract_to_excel(str(src), str(xlsx))
-
-    xls = pd.ExcelFile(xlsx)
-    elements = pd.read_excel(xls, "Elements")
-    types = pd.read_excel(xls, "Types")
-    project = pd.read_excel(xls, "ProjectData")
-    raw_entities = pd.read_excel(xls, "RawEntities")
-    props = pd.read_excel(xls, "Properties")
-    cobie = pd.read_excel(xls, "COBieMapping")
-    uniclass_pr = pd.read_excel(xls, "Uniclass_Pr")
-    uniclass_ss = pd.read_excel(xls, "Uniclass_Ss")
-    uniclass_ef = pd.read_excel(xls, "Uniclass_EF")
-    xls.close()
-
-    type_row = types[types["CurrentEntity"] == "IfcBuildingElementProxyType"].iloc[0]
-    types.loc[types["RowKey"] == type_row["RowKey"], "TargetEntity"] = "IfcWall"  # type -> occurrence
-    types.loc[types["RowKey"] == type_row["RowKey"], "TargetPredefinedType"] = "NOT_A_VALID_TYPE"
-    types.loc[types["RowKey"] == type_row["RowKey"], "ApplyChange"] = "Yes"
-
-    with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
-        project.to_excel(writer, sheet_name="ProjectData", index=False)
-        elements.to_excel(writer, sheet_name="Elements", index=False)
-        types.to_excel(writer, sheet_name="Types", index=False)
-        raw_entities.to_excel(writer, sheet_name="RawEntities", index=False)
-        props.to_excel(writer, sheet_name="Properties", index=False)
-        cobie.to_excel(writer, sheet_name="COBieMapping", index=False)
-        uniclass_pr.to_excel(writer, sheet_name="Uniclass_Pr", index=False)
-        uniclass_ss.to_excel(writer, sheet_name="Uniclass_Ss", index=False)
-        uniclass_ef.to_excel(writer, sheet_name="Uniclass_EF", index=False)
-
-    update_ifc_from_excel(str(src), str(xlsx), str(updated), add_new="yes")
-    log_df = pd.read_excel(xlsx, sheet_name="ChangeLog")
-    assert any("type to occurrence" in str(msg) for msg in log_df["Message"].tolist())
-
-    revised = ifcopenshell.open(str(updated))
-    assert revised.by_guid(proxy_type.GlobalId).is_a() == "IfcBuildingElementProxyType"
+    paths, _, typ, _ = export(tmp_path)
+    edit(paths[1], [('Types', typ, 'IFC Entity', 'IfcWall')])
+    with pytest.raises(ExcelWritebackValidationError):
+        update_ifc_from_excel(*map(str, paths))
+    assert not paths[2].exists()
 
 
-def test_type_invalid_predefined_falls_back_to_userdefined(tmp_path):
-    model, _, _, wall_type = _build_ifc2x3_model(tmp_path)
-    src = tmp_path / "src.ifc"
-    xlsx = tmp_path / "out.xlsx"
-    updated = tmp_path / "updated.ifc"
-    model.write(str(src))
-    extract_to_excel(str(src), str(xlsx))
+def test_type_invalid_predefined_is_rejected_without_userdefined_fallback(tmp_path):
+    paths, _, _, typ = export(tmp_path)
+    edit(paths[1], [('Types', typ, 'Predefined Type', 'CULVERT')])
+    with pytest.raises(ExcelWritebackValidationError):
+        update_ifc_from_excel(*map(str, paths))
+    assert not paths[2].exists()
 
-    xls = pd.ExcelFile(xlsx)
-    elements = pd.read_excel(xls, "Elements")
-    types = pd.read_excel(xls, "Types")
-    project = pd.read_excel(xls, "ProjectData")
-    raw_entities = pd.read_excel(xls, "RawEntities")
-    props = pd.read_excel(xls, "Properties")
-    cobie = pd.read_excel(xls, "COBieMapping")
-    uniclass_pr = pd.read_excel(xls, "Uniclass_Pr")
-    uniclass_ss = pd.read_excel(xls, "Uniclass_Ss")
-    uniclass_ef = pd.read_excel(xls, "Uniclass_EF")
-    xls.close()
 
-    type_row = types[types["GlobalId"] == wall_type.GlobalId].iloc[0]
-    types.loc[types["RowKey"] == type_row["RowKey"], "TargetPredefinedType"] = "CULVERT"
-    types.loc[types["RowKey"] == type_row["RowKey"], "ApplyChange"] = "Yes"
-
-    with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
-        project.to_excel(writer, sheet_name="ProjectData", index=False)
-        elements.to_excel(writer, sheet_name="Elements", index=False)
-        types.to_excel(writer, sheet_name="Types", index=False)
-        raw_entities.to_excel(writer, sheet_name="RawEntities", index=False)
-        props.to_excel(writer, sheet_name="Properties", index=False)
-        cobie.to_excel(writer, sheet_name="COBieMapping", index=False)
-        uniclass_pr.to_excel(writer, sheet_name="Uniclass_Pr", index=False)
-        uniclass_ss.to_excel(writer, sheet_name="Uniclass_Ss", index=False)
-        uniclass_ef.to_excel(writer, sheet_name="Uniclass_EF", index=False)
-
-    update_ifc_from_excel(str(src), str(xlsx), str(updated), add_new="yes")
-    revised = ifcopenshell.open(str(updated))
-    updated_wall_type = revised.by_guid(wall_type.GlobalId)
-    assert updated_wall_type.PredefinedType == "USERDEFINED"
-    assert updated_wall_type.ElementType == "CULVERT"
+def test_legacy_apply_change_import(tmp_path):
+    paths, proxy, typ, _ = export(tmp_path)
+    wb = load_workbook(paths[1]); ws = wb['Types']
+    for cell in ws[1]:
+        if cell.value == 'Type GlobalId': cell.value = 'GlobalId'
+        elif cell.value == 'Type Name': cell.value = 'Name'
+    # v1 TargetEntity/ApplyChange continue to work without row order or STEP identity.
+    headers = {cell.value: cell.column for cell in ws[1]}
+    row = next(i for i in range(2, ws.max_row + 1) if ws.cell(i, headers['GlobalId']).value == typ)
+    col = ws.max_column + 1
+    ws.cell(1, col, 'TargetEntity'); ws.cell(row, col, 'IfcWallType')
+    ws.cell(1, col + 1, 'ApplyChange'); ws.cell(row, col + 1, 'Yes')
+    wb.save(paths[1]); wb.close()
+    update_ifc_from_excel(*map(str, paths))
+    revised = ifcopenshell.open(str(paths[2]))
+    assert revised.by_guid(typ).is_a() == 'IfcWallType'
+    assert revised.by_guid(proxy).is_a() == 'IfcWall'

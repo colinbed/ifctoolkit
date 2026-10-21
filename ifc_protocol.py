@@ -330,6 +330,9 @@ def read_source(model: Any, element: Any, source: Dict[str, Any], row_values: Op
     if not isinstance(source, dict):
         return None
     kind = str(source.get("kind") or "attribute").strip().lower()
+    if kind in {"entity", "material", "floor_classification"}:
+        from ifc_excel_targets import read_association
+        return clean_protocol_value(read_association(element, source))
     if kind == "attribute":
         return clean_protocol_value(getattr(element, source.get("attribute") or "", None))
     if kind in {"type_attribute", "typeattribute"}:
@@ -715,6 +718,9 @@ def write_source(model: Any, element: Any, source: Dict[str, Any], value: Any, w
     if not isinstance(source, dict):
         return None, None, "Skipped: target missing"
     kind = str(source.get("kind") or "attribute").strip().lower()
+    if kind in {"entity", "material", "floor_classification"}:
+        from ifc_excel_targets import write_association
+        return write_association(model, element, source, value)
     if kind == "attribute":
         attr = source.get("attribute") or ""
         old_value = clean_protocol_value(getattr(element, attr, None))
@@ -733,6 +739,21 @@ def write_source(model: Any, element: Any, source: Dict[str, Any], value: Any, w
         setattr(type_obj, attr, "" if value is None else value)
         return old_value, value, "Applied"
     if kind in {"property", "occurrence_property"}:
+        # Storey edits must not modify a shared property graph on components or other floors.
+        if element.is_a("IfcBuildingStorey"):
+            pset = _find_pset_entity(element, source.get("pset") or "")
+            if pset is not None:
+                relationships = [r for r in model.get_inverse(pset) if r.is_a("IfcRelDefinesByProperties")]
+                if any(any(obj != element for obj in rel.RelatedObjects) for rel in relationships):
+                    import ifcopenshell.util.element
+                    from ifc_excel_targets import detach
+                    clone = ifcopenshell.util.element.copy_deep(model, pset)
+                    for rel in relationships:
+                        if element in rel.RelatedObjects:
+                            association = ifcopenshell.util.element.copy(model, rel)
+                            association.RelatingPropertyDefinition = clone
+                            association.RelatedObjects = [element]
+                            detach(model, element, rel)
         return _set_property_value(model, element, source, value, write_cfg)
     if kind in {"type_property", "typeproperty"}:
         type_obj = _get_type(element)
