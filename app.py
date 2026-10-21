@@ -1867,8 +1867,10 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             elements = [by_id[key] for key in sorted(by_id)]
         else:
             elements = [e for e in ifc.by_type("IfcProduct") if getattr(e, "GlobalId", None)]
-        need_types = plan.include_type_properties or "Types" in plan.include_sheets
-        all_types = [e for e in ifc.by_type("IfcTypeObject") if getattr(e, "GlobalId", None)] if need_types else []
+        all_types = list({rel.RelatingType.GlobalId: rel.RelatingType for rel in ifc.by_type("IfcRelDefinesByType")}.values())
+
+    from ifc_excel_schema import read_class_overrides
+    class_overrides = read_class_overrides(output_path, ifc)
 
     type_cache: Dict[int, Any] = {}
     type_psets_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
@@ -1907,7 +1909,7 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             pass
 
     header_meta = parse_ifc_header_metadata(ifc_path)
-    schema_for_lookup = (header_meta.get("schema") or ifc.schema or "IFC4").upper()
+    schema_for_lookup = ifc.schema_identifier
     is_ifc2x3 = schema_for_lookup == "IFC2X3"
     workbook = Workbook(write_only=True)
     elements_ws = None
@@ -1943,38 +1945,49 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             for row in rows: ws.append([_sanitize_excel_text(v) for v in row])
             stats["rows_written"] = len(rows)
 
-    roundtrip_cols = ["RowKey", "StepId", "GlobalId", "CurrentEntity", "TargetEntity", "CurrentPredefinedType", "TargetPredefinedType", "Name", "ObjectType or ElementType", "ApplicableOccurrence", "IsTypeObject", "Validation", "ApplyChange", "SuggestedEntity", "SuggestedPredefinedType", "SuggestionConfidence", "SuggestionReason"]
-    def roundtrip_row(obj: Any, is_type: bool) -> List[Any]:
-        entity = obj.is_a(); predefined = getattr(obj, "PredefinedType", "") or ""
-        base = {"CurrentEntity": entity, "TargetEntity": entity, "PredefinedType": predefined, "Name": getattr(obj, "Name", "") or ""}
-        suggestion = _build_classification_suggestion(base)
-        return [f"{getattr(obj, 'GlobalId', '') or ''}:{obj.id()}", obj.id(), getattr(obj, "GlobalId", "") or "", entity, entity, predefined, predefined or "UNCHANGED", getattr(obj, "Name", "") or "", (getattr(obj, "ElementType", "") if is_type else getattr(obj, "ObjectType", "")) or "", getattr(obj, "ApplicableOccurrence", "") if is_type else "", is_type, "", "No", suggestion.get("SuggestedEntity", ""), suggestion.get("SuggestedPredefinedType", ""), suggestion.get("SuggestionConfidence", 0.0), suggestion.get("SuggestionReason", "")]
-
     with profiler.stage("extract_elements", entities_processed=len(elements)) as stats:
         if "Elements" in plan.include_sheets:
-            prefix = ["GlobalId", "Class", "OccurrenceName", "OccurrenceType", "TypeName", "TypeDescription", "IFCPresentationLayer", "ExpressLine", "IfcEntity", "PredefinedType", "Name", "ObjectType", "SourceFile"]
+            from ifc_excel_targets import material_assignment
+            from ifc_excel_schema import add_native_validations
+            prefix = ["GlobalId", "Instance Name", "Instance Description", "Type Name", "Type Description", "Object Type", "Material", "IFC Entity", "Predefined Type", "Type GlobalId", "Material Scope (read-only)", "Material Kind (read-only)", "Material Guidance (read-only)", "IFCPresentationLayer", "ExpressLine (read-only)", "SourceFile (read-only)", "Suggested Entity (read-only)", "Suggested Predefined Type (read-only)", "Suggestion Confidence (read-only)", "Suggestion Reason (read-only)"]
             extra = list(CIVIL3D_EXTENDED_FIELDS) if plan.civil3d_extended else []
-            ws = elements_ws = sheet("Elements", prefix + extra + roundtrip_cols)
-            element_columns = prefix + extra + roundtrip_cols
-            if elements:
-                for column_name, formula in (("IfcEntity", "=IfcEntityList"), ("PredefinedType", "=PredefinedTypeList")):
-                    validation = DataValidation(type="list", formula1=formula, allow_blank=True)
-                    letter = get_column_letter(element_columns.index(column_name) + 1)
-                    validation.add(f"{letter}2:{letter}{len(elements) + 1}")
-                    ws.data_validations.append(validation)
+            ws = elements_ws = sheet("Elements", prefix + extra)
+            add_native_validations(ws, prefix + extra, len(elements), "occurrence")
             for elem in elements:
                 typ = element_type(elem)
                 occurrence_psets = _safe_get_psets(elem) if extra else {}
                 def value(_e, p, n):
                     value = occurrence_psets.get(p, {}).get(n)
                     return value if value is not None else type_psets(typ).get(p, {}).get(n, "")
-                predefined = getattr(elem, "PredefinedType", "") or ""
-                row = [elem.GlobalId, elem.is_a(), getattr(elem, "Name", "") or "", getattr(elem, "ObjectType", "") or "", getattr(typ, "Name", "") if typ else "", getattr(elem, "Description", "") or "", _get_layers_name(elem, ifc), str(elem), elem.is_a(), predefined, getattr(elem, "Name", "") or "", getattr(elem, "ObjectType", "") or "", os.path.basename(ifc_path)]
+                owner, material, scope, kind, material_label = material_assignment(elem)
+                guidance = ("Reference only: preserve structured assignment" if kind not in {"IfcMaterial", "unassigned"}
+                            else "Edits affect the assigned type" if scope == "type" else "Edits affect this instance")
+                row = [elem.GlobalId, getattr(elem, "Name", "") or "", getattr(elem, "Description", "") or "",
+                       getattr(typ, "Name", "") or "", getattr(typ, "Description", "") or "",
+                       getattr(elem, "ObjectType", "") or "", material_label, elem.is_a(),
+                       getattr(elem, "PredefinedType", "") or "" if hasattr(elem, "PredefinedType") else "Unavailable",
+                       getattr(typ, "GlobalId", "") or "", scope, kind, guidance, _get_layers_name(elem, ifc), str(elem), os.path.basename(ifc_path)]
+                suggestion = _build_classification_suggestion({"CurrentEntity": elem.is_a(), "Name": elem.Name or "", "TypeName": getattr(typ, "Name", "") or "", "ObjectType": getattr(elem, "ObjectType", "") or "", "ExtObject": _resolve_field_value(elem, typ, "ExtObject", value) if extra else ""})
+                row.extend([suggestion.get("SuggestedEntity", ""), suggestion.get("SuggestedPredefinedType", ""), suggestion.get("SuggestionConfidence", 0), suggestion.get("SuggestionReason", "")])
+                override = class_overrides.get(("Elements", elem.GlobalId), {})
+                row[7] = override.get("IFC Entity", row[7])
+                row[8] = override.get("Predefined Type", row[8])
                 row.extend(_resolve_field_value(elem, typ, name, value) for name in extra)
-                row.extend(roundtrip_row(elem, False)); ws.append([_sanitize_excel_text(v) for v in row]); stats["rows_written"] += 1
-        if "Types" in plan.include_sheets:
-            ws = sheet("Types", roundtrip_cols)
-            for obj in all_types: ws.append(roundtrip_row(obj, True)); stats["rows_written"] += 1
+                ws.append([_sanitize_excel_text(v) for v in row]); stats["rows_written"] += 1
+        if "Types" in plan.include_sheets or "Elements" in plan.include_sheets:
+            from ifc_excel_schema import add_native_validations
+            cols = ["Type GlobalId", "Type Name", "Type Description", "IFC Entity", "Predefined Type", "Element Type", "Assigned Instance Count"]
+            ws = sheet("Types", cols)
+            add_native_validations(ws, cols, len(all_types), "type")
+            assigned_counts = {}
+            for rel in ifc.by_type("IfcRelDefinesByType"):
+                assigned_counts.setdefault(rel.RelatingType.GlobalId, set()).update(o.GlobalId for o in rel.RelatedObjects)
+            for obj in all_types:
+                override = class_overrides.get(("Types", obj.GlobalId), {})
+                ws.append([obj.GlobalId, obj.Name or "", obj.Description or "", override.get("IFC Entity", obj.is_a()),
+                           override.get("Predefined Type", getattr(obj, "PredefinedType", "") or "" if hasattr(obj, "PredefinedType") else "Unavailable"),
+                           getattr(obj, "ElementType", "") or "", len(assigned_counts[obj.GlobalId])])
+                stats["rows_written"] += 1
         if "RawEntities" in plan.include_sheets:
             ws = sheet("RawEntities", ["StepId", "GlobalId", "Entity", "Name", "RawStepLine"])
             for obj in elements:
@@ -1997,7 +2010,12 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
                         if plan.property_sets and name not in plan.property_sets: continue
                         for prop in definition.HasProperties:
                             value = None
-                            if prop.is_a("IfcPropertySingleValue"): value = _extract_nominal_value(prop)
+                            if prop.is_a("IfcPropertySingleValue"):
+                                try:
+                                    value = _extract_nominal_value(prop)
+                                except Exception:
+                                    APP_LOGGER.warning("Unreadable property %s", getattr(prop, "Name", ""))
+                                    value = None
                             elif prop.is_a("IfcPropertyEnumeratedValue"):
                                 value = ", ".join(_clean_value(_normalize_ifc_value(v, prop_name=getattr(prop, "Name", "") or "", entity_type=prop.is_a())) for v in (prop.EnumerationValues or ()))
                             elif prop.is_a("IfcPropertyListValue"):
@@ -2057,31 +2075,38 @@ def extract_to_excel_with_plan(ifc_path: str, output_path: str, plan: Optional[E
             ws = sheet(name, list(frame.columns))
             for row in frame.itertuples(index=False, name=None): ws.append(list(row)); counts["protocol_rows"] += 1
 
-    # Keep the editable round-trip dropdown contract without loading the workbook
-    # back into memory. Write-only worksheets can serialise validations and names.
-    if schema_for_lookup == "IFC2X3":
-        mapping = load_ifc2x3_entity_mapping()
-        entities = sorted((mapping.get("entities") or {}).keys())
-        enum_for = lambda entity: ((mapping.get("entities", {}).get(entity, {}) or {}).get("predefined_types", []) or [])
-    else:
-        entities = sorted(_entity_names(_schema_definition(schema_for_lookup)))
-        enum_for = lambda entity: (_predefined_type_info(schema_for_lookup, entity).get("enum_items", []) or [])
-    predefined_values = sorted({str(value).strip() for entity in entities for value in enum_for(entity) if str(value).strip()})
-    suffix = "IFC2X3" if schema_for_lookup == "IFC2X3" else "IFC4"
-    lookup_entities = sheet(f"_Lookups_{suffix}_Entities", ["IfcEntity"])
-    lookup_predefs = sheet(f"_Lookups_{suffix}_Predefs", ["PredefinedType"])
-    lookup_map = sheet(f"_Lookups_{suffix}_Map", ["IfcEntity", "PredefinedType"])
-    for entity in entities:
-        lookup_entities.append([entity])
-        for value in enum_for(entity):
-            if str(value).strip(): lookup_map.append([entity, str(value).strip()])
-    for value in predefined_values: lookup_predefs.append([value])
-    for lookup in (lookup_entities, lookup_predefs, lookup_map): lookup.sheet_state = "hidden"
-    if entities:
-        _upsert_workbook_defined_name(workbook, "IfcEntityList", _excel_range(lookup_entities.title, "A", 2, len(entities) + 1))
-    if predefined_values:
-        _upsert_workbook_defined_name(workbook, "PredefinedTypeList", _excel_range(lookup_predefs.title, "A", 2, len(predefined_values) + 1))
-
+    from ifc_excel_schema import add_reference_sheets
+    from ifc_excel_targets import FLOOR_PROPERTIES, FLOOR_REFERENCE, FLOOR_NAME, floor_reference
+    add_reference_sheets(workbook, sheet, schema_for_lookup)
+    floor_pairs = {("COBie_FloorAttributes", name) for name in FLOOR_PROPERTIES}
+    storeys = ifc.by_type("IfcBuildingStorey")
+    for storey in storeys:
+        for pset, props in ifcopenshell.util.element.get_psets(storey, should_inherit=False).items():
+            if pset in {"COBie_Floor", "COBie_FloorAttributes"}:
+                floor_pairs.update((pset, prop) for prop in props if prop != "id")
+    floor_pairs = sorted(floor_pairs)
+    cols = ["GlobalId", "Building", "Name", "Description", "Long Name", "Elevation", FLOOR_REFERENCE, FLOOR_NAME] + [f"{p}.{n}" for p, n in floor_pairs]
+    ws = sheet("BuildingStoreys", cols)
+    for storey in storeys:
+        parent = ifcopenshell.util.element.get_aggregate(storey)
+        ref = floor_reference(storey)
+        psets = ifcopenshell.util.element.get_psets(storey, should_inherit=False)
+        ws.append([storey.GlobalId, getattr(parent, "GlobalId", ""), storey.Name, storey.Description, storey.LongName,
+                   storey.Elevation, (getattr(ref, "Identification", None) or getattr(ref, "ItemReference", None)) if ref else None,
+                   ref.Name if ref else None, *[psets.get(p, {}).get(n) for p, n in floor_pairs]])
+    instructions = sheet("Instructions", ["Topic", "Instructions"])
+    for row in [
+        ("Workbook Version", "2"),
+        ("Identity", "GlobalId and Type GlobalId are read-only. Import resolves existing objects by GUID. Blank cells preserve values."),
+        ("Native attributes", "Instance Name/Description edit occurrences; Type Name/Description edit assigned types. Types and Elements edits resolve to a single target; conflicting explicit edits are rejected."),
+        ("Reference columns", "Columns marked read-only, identity columns, counts, Building and Elevation are reference only. Properties, RawEntities and schema references are reference only."),
+        ("COBie mapping", "COBie_FloorAttributes properties use the exact repository QA template names. Existing COBie_Floor properties are exported with their original names; neither is a native IFC attribute."),
+        ("Floor classification", "COBie Floors Classification Reference/Name edit IfcRelAssociatesClassification references in system COBie Floors, separately from properties. Missing references and floor property sets can be created on the storey."),
+        ("Materials", "Simple IfcMaterial associations are editable at their exported occurrence/type scope, using a separate material definition. Type-scope edits affect all assigned instances. Structured layer/profile/constituent/list assignments are reference only and cannot be replaced with text."),
+        ("Schema choices", "SchemaReference and SchemaChoices use the exact installed IfcOpenShell schema. Predefined Type choices depend on IFC Entity. Unavailable means no native occurrence/type attribute; inherited enums are not editable here. No macros or network are required."),
+        ("Class conversions", "Concrete element classes only. Assigned type/occurrence classes change together; conflicting shared-type requests require resolution. Conversions that would discard populated native attributes or incompatible enumerations are rejected."),
+        ("Documentation", "buildingSMART official lexical documentation URLs are supplied in SchemaReference. Executable choices come from EXPRESS declarations; documentation is descriptive only."),
+    ]: instructions.append(row)
 
     with profiler.stage("write_workbook") as stats:
         stats["rows_written"] = sum(profiler.rows.values())
@@ -2409,7 +2434,7 @@ def update_ifc_from_excel(
     xls_path = path_of(excel_file)
     if not os.path.isfile(ifc_path):
         raise ValueError("A source IFC is required for update mode; source-free IFC creation is not supported by this workflow.")
-    if os.path.abspath(ifc_path) == os.path.abspath(output_path):
+    if os.path.realpath(ifc_path) == os.path.realpath(output_path):
         raise ValueError("The output IFC must use a separate path from the source IFC.")
     source_digest = hashlib.sha256(Path(ifc_path).read_bytes()).hexdigest()
     file_size = os.path.getsize(ifc_path) if os.path.exists(ifc_path) else None
@@ -2488,7 +2513,7 @@ def update_ifc_from_excel(
     APP_LOGGER.info("IFC_WRITEBACK_VALIDATION_COMPLETED errors=0 warnings=%d", len(findings["warnings"]))
 
     project = projects[0]
-    source_schema = (ifc.schema or "").upper()
+    source_schema = ifc.schema_identifier
     baseline_metadata: Dict[str, Dict[str, Any]] = {}
     site = ifc.by_type("IfcSite")[0] if ifc.by_type("IfcSite") else None
     building = ifc.by_type("IfcBuilding")[0] if ifc.by_type("IfcBuilding") else None
@@ -2601,7 +2626,6 @@ def update_ifc_from_excel(
 
     schema_name = (ifc.schema or "IFC4").upper()
     schema_def = _schema_definition(schema_name)
-    entities_cfg = (load_ifc2x3_entity_mapping().get("entities") or {}) if schema_name == "IFC2X3" else {}
 
     def _schema_has_entity(entity_name: str) -> bool:
         if not entity_name:
@@ -2613,24 +2637,6 @@ def update_ifc_from_excel(
         except Exception:
             return False
 
-    def _validate_instance_shape(entity_instance: Any) -> bool:
-        if entity_instance is None or schema_def is None:
-            return True
-        try:
-            decl = schema_def.declaration_by_name(entity_instance.is_a())
-            expected = len(decl.all_attributes())
-            return len(entity_instance) == expected
-        except Exception:
-            return True
-
-    def _enum_items_for_entity(entity_name: str) -> List[str]:
-        enum_items = _predefined_type_info(schema_name, entity_name).get("enum_items", []) or []
-        if enum_items:
-            return enum_items
-        if schema_name == "IFC2X3":
-            return (entities_cfg.get(entity_name, {}) or {}).get("predefined_types", []) or []
-        return []
-
     def _lookup_by_row(row: pd.Series) -> Any:
         guid = clean_value(row.get("GlobalId"))
         if guid:
@@ -2640,12 +2646,6 @@ def update_ifc_from_excel(
                     return found
             except Exception:
                 pass
-        step_id = row.get("StepId")
-        if pd.notna(step_id):
-            try:
-                return ifc.by_id(int(step_id))
-            except Exception:
-                return None
         return None
 
     # Phase 1: resolve every class decision before any per-element mutation.
@@ -2669,7 +2669,6 @@ def update_ifc_from_excel(
             "protocol": endpoint,
         },
     )
-    mapping_by_row = {item.row_index: item for item in mapping_plan}
     APP_LOGGER.info(
         "PROXY_MAPPING_PLAN rows=%d unique_signatures=%d explicit_excel=%d "
         "existing_mapping=%d inferred=%d fallback=%d elapsed_s=%.3f",
@@ -2679,122 +2678,6 @@ def update_ifc_from_excel(
         mapping_metrics["elapsed_s"],
     )
     APP_LOGGER.info("IFC_WRITE_STAGE stage=Applying element updates")
-
-    def _apply_entity_predefined_updates(rows_df: pd.DataFrame, expected_kind: str) -> None:
-        if rows_df is None or rows_df.empty:
-            return
-        if "Validation" in rows_df.columns:
-            rows_df["Validation"] = rows_df["Validation"].astype(object)
-        for row_idx, row in rows_df.iterrows():
-            target = _lookup_by_row(row)
-            if target is None:
-                continue
-            apply_change = str(clean_value(row.get("ApplyChange")) or "").strip().lower() in {"yes", "y", "true", "1"}
-            current_entity = str(clean_value(row.get("CurrentEntity")) or target.is_a())
-            planned = mapping_by_row.get(row_idx) if expected_kind == "occurrence" else None
-            requested_entity = planned.resolved_target_entity if planned else str(clean_value(row.get("TargetEntity")) or current_entity)
-            current_predef = str(clean_value(row.get("CurrentPredefinedType")) or getattr(target, "PredefinedType", "") or "")
-            requested_predef_raw = clean_value(row.get("TargetPredefinedType"))
-            requested_predef = str(requested_predef_raw if requested_predef_raw is not None else current_predef)
-            if not apply_change:
-                continue
-
-            result = {
-                "RowKey": row.get("RowKey", ""),
-                "GlobalId": getattr(target, "GlobalId", ""),
-                "StepId": target.id(),
-                "FromEntity": current_entity,
-                "ToEntity": requested_entity,
-                "FromPredefinedType": current_predef,
-                "ToPredefinedType": requested_predef,
-            }
-            if (planned and planned.resolution_source == "unchanged_fallback"
-                    and planned.explicit_target_entity
-                    and planned.explicit_target_entity != current_entity):
-                result["ToEntity"] = planned.explicit_target_entity
-                result.update({"Status": "Rejected", "Message": "Invalid mapping: target entity or predefined type not safe for schema"})
-                rows_df.at[row_idx, "Validation"] = "Invalid mapping"
-                change_log_rows.append(result)
-                APP_LOGGER.warning("Unsafe class mapping preserved source GlobalId=%s requested=%s schema=%s",
-                                   planned.global_id, planned.explicit_target_entity, schema_name)
-                continue
-            if not _schema_has_entity(requested_entity):
-                result.update({"Status": "Rejected", "Message": "Invalid mapping: target entity not in schema"})
-                rows_df.at[row_idx, "Validation"] = "Invalid mapping"
-                change_log_rows.append(result)
-                continue
-            expected_type = requested_entity.upper().endswith("TYPE")
-            if (expected_kind == "type" and not expected_type) or (expected_kind == "occurrence" and expected_type):
-                result.update({"Status": "Rejected", "Message": "attempt to convert type to occurrence or occurrence to type"})
-                rows_df.at[row_idx, "Validation"] = "Invalid mapping"
-                change_log_rows.append(result)
-                continue
-
-            migrated = target
-            if requested_entity != current_entity:
-                try:
-                    migrated = ifcopenshell.api.run("root.reassign_class", ifc, product=target, ifc_class=requested_entity)
-                except Exception as exc:
-                    result.update({"Status": "Rejected", "Message": f"failed entity migration: {exc}"})
-                    rows_df.at[row_idx, "Validation"] = "Invalid mapping"
-                    change_log_rows.append(result)
-                    continue
-
-            row_validation = ""
-            fallback_userdefined = False
-            suggestion_used = clean_value(row.get("SuggestedEntity")) is not None
-            if not _validate_instance_shape(migrated):
-                result.update({"Status": "Rejected", "Message": "Invalid mapping: entity argument structure mismatch"})
-                rows_df.at[row_idx, "Validation"] = "Invalid mapping"
-                change_log_rows.append(result)
-                continue
-
-            if requested_predef and hasattr(migrated, "PredefinedType"):
-                enum_items = _enum_items_for_entity(migrated.is_a())
-                normalized_lookup = {normalize_token(item): item for item in enum_items}
-                normalized_requested = normalize_token(requested_predef)
-                if normalized_requested and normalized_requested in normalized_lookup:
-                    migrated.PredefinedType = normalized_lookup[normalized_requested]
-                else:
-                    if "USERDEFINED" in normalized_lookup or hasattr(migrated, "PredefinedType"):
-                        userdefined_literal = normalized_lookup.get("USERDEFINED", "USERDEFINED")
-                        migrated.PredefinedType = userdefined_literal
-                        if hasattr(migrated, "ObjectType"):
-                            migrated.ObjectType = requested_predef
-                        elif hasattr(migrated, "ElementType"):
-                            migrated.ElementType = requested_predef
-                        fallback_userdefined = True
-                    else:
-                        result.update({"Status": "Rejected", "Message": "Invalid mapping: predefined type incompatible with entity"})
-                        rows_df.at[row_idx, "Validation"] = "Invalid mapping"
-                        change_log_rows.append(result)
-                        continue
-            elif requested_predef and not hasattr(migrated, "PredefinedType"):
-                APP_LOGGER.warning(
-                    "Ignoring TargetPredefinedType for entity without PredefinedType GlobalId=%s entity=%s target_predefined=%s schema=%s",
-                    getattr(migrated, "GlobalId", ""),
-                    migrated.is_a(),
-                    requested_predef,
-                    schema_name,
-                )
-                row_validation = clean_value(rows_df.at[row_idx, "Validation"]) or ""
-            result.update({"Status": "Applied", "Message": "ok"})
-            change_log_rows.append(result)
-            rows_df.at[row_idx, "Validation"] = row_validation
-            APP_LOGGER.info(
-                "excel_row_apply global_id=%s entity=%s->%s predefined=%s->%s suggestion_used=%s userdefined_fallback=%s schema=%s",
-                getattr(migrated, "GlobalId", ""),
-                current_entity,
-                requested_entity,
-                current_predef,
-                requested_predef,
-                bool(suggestion_used),
-                fallback_userdefined,
-                schema_name,
-            )
-
-    _apply_entity_predefined_updates(elements_df, "occurrence")
-    _apply_entity_predefined_updates(types_df, "type")
 
     total_element_rows = len(elements_df)
     for processed, (_, row) in enumerate(elements_df.iterrows(), 1):
@@ -2810,28 +2693,6 @@ def update_ifc_from_excel(
             continue
         if "IFCPresentationLayer" in elements_df.columns and pd.notna(row.get("IFCPresentationLayer")):
             _set_element_presentation_layer(ifc, elem, row.get("IFCPresentationLayer"), mode="replace")
-        type_name_value = clean_value(row.get("TypeName"))
-        if type_name_value is not None:
-            type_name = str(type_name_value)
-            type_obj = None
-            for rel in ifc.get_inverse(elem):
-                if rel.is_a("IfcRelDefinesByType"):
-                    type_obj = rel.RelatingType
-            if not type_obj and add_new == "yes":
-                type_class = (
-                    elem.is_a() + "Type"
-                    if elem.is_a().endswith("Element") or elem.is_a().endswith("Door")
-                    else "IfcTypeObject"
-                )
-                try:
-                    type_obj = ifcopenshell.api.run("type.create_type", ifc, ifc_class=type_class, name=type_name)
-                except Exception:
-                    type_obj = ifc.create_entity(
-                        "IfcBuildingElementType",
-                        GlobalId=new_guid(),
-                        Name=type_name,
-                    )
-                ifcopenshell.api.run("type.assign_type", ifc, related_objects=[elem], relating_type=type_obj)
         if processed % 1000 == 0 or processed == total_element_rows:
             APP_LOGGER.info("IFC_WRITE_PROGRESS processed=%d total=%d percent=%.1f",
                             processed, total_element_rows,
@@ -2926,7 +2787,7 @@ def update_ifc_from_excel(
     verified_projects = verified.by_type("IfcProject")
     if len(verified_projects) != 1:
         raise ValueError(f"Output verification failed: expected exactly one IfcProject, found {len(verified_projects)}.")
-    if (verified.schema or "").upper() != source_schema:
+    if verified.schema_identifier != source_schema:
         raise ValueError(f"Output verification failed: schema changed from {source_schema} to {verified.schema}.")
     verified_by_type = {"Project": verified_projects[0],
                         "Site": verified.by_type("IfcSite")[0] if verified.by_type("IfcSite") else None,

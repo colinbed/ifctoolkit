@@ -19,7 +19,7 @@ def update(paths, **kwargs):
 @pytest.mark.parametrize("sheets", [("Elements",), ("ProtocolData",), ("Elements", "ProtocolData")])
 def test_split_two_names_preserves_occurrences_and_is_repeatable(exported, tmp_path, sheets):
     source, workbook, output, guids, original_guid = exported
-    edit(workbook, [(sheet, guid, "TypeName" if sheet == "Elements" else "Type Name", name)
+    edit(workbook, [(sheet, guid, "Type Name" if sheet == "Elements" else "Type Name", name)
                     for sheet in sheets for guid, name in zip(guids, ["Beam022", "Beam023"])])
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     result = update(exported, add_new="no")
@@ -51,7 +51,7 @@ def test_split_two_names_preserves_occurrences_and_is_repeatable(exported, tmp_p
 
 def test_unedited_occurrence_keeps_original_type(exported):
     source, workbook, output, guids, original_guid = exported
-    edit(workbook, [("Elements", guids[0], "TypeName", "Renamed")])
+    edit(workbook, [("Elements", guids[0], "Type Name", "Renamed")])
     update(exported)
     model = ifcopenshell.open(str(output))
     assert util.get_type(model.by_guid(guids[0])).Name == "Renamed"
@@ -62,7 +62,7 @@ def test_unedited_occurrence_keeps_original_type(exported):
 
 def test_consistent_rename_uses_existing_type(exported):
     source, workbook, output, guids, original_guid = exported
-    edit(workbook, [("Elements", guid, "TypeName", "Renamed") for guid in guids])
+    edit(workbook, [("Elements", guid, "Type Name", "Renamed") for guid in guids])
     result = update(exported)
     model = ifcopenshell.open(str(output))
     assert len(model.by_type("IfcBeamType")) == 1
@@ -72,7 +72,7 @@ def test_consistent_rename_uses_existing_type(exported):
 
 def test_same_occurrence_contradiction_still_fails(exported):
     source, workbook, output, guids, original_guid = exported
-    edit(workbook, [("Elements", guids[0], "TypeName", "ONE"),
+    edit(workbook, [("Elements", guids[0], "Type Name", "ONE"),
                     ("ProtocolData", guids[0], "Type Name", "TWO")])
     with pytest.raises(ExcelWritebackValidationError) as caught:
         update(exported)
@@ -107,7 +107,7 @@ def test_clone_preserves_type_data_and_isolates_group_properties(exported):
         "write": {"enabled": True},
     })
     extract_to_excel(str(source), str(workbook), plan_payload={"protocol": config})
-    edit(workbook, [("Elements", guid, "TypeName", f"Type-{i}") for i, guid in enumerate(guids)] +
+    edit(workbook, [("Elements", guid, "Type Name", f"Type-{i}") for i, guid in enumerate(guids)] +
          [("ProtocolData", guid, "Group Code", f"Code-{i}") for i, guid in enumerate(guids)])
     update(exported)
     model = ifcopenshell.open(str(output))
@@ -139,7 +139,7 @@ def test_unrelated_types_with_matching_names_remain_separate(exported):
     extra_guid, unrelated_guid = extra.GlobalId, unrelated.GlobalId
     model.write(str(source))
     extract_to_excel(str(source), str(workbook), plan_payload={"protocol": default_protocol_config()})
-    edit(workbook, [("Elements", guids[0], "TypeName", "MATCH"), ("Elements", extra_guid, "TypeName", "MATCH")])
+    edit(workbook, [("Elements", guids[0], "Type Name", "MATCH"), ("Elements", extra_guid, "Type Name", "MATCH")])
     update(exported)
     model = ifcopenshell.open(str(output))
     assert util.get_type(model.by_guid(guids[0])).GlobalId != util.get_type(model.by_guid(extra_guid)).GlobalId
@@ -155,7 +155,7 @@ def test_concise_grouped_conflict_for_24_occurrences():
     plan = WorkbookWritePlan(model)
     for i, beam in enumerate(beams):
         plan.add(beam, dict(kind="type_attribute", attribute="Name"),
-                 "EST_S_Beam_Beam022" if i < 14 else "EST_S_Beam_Beam023", "Elements", 623 + i, "TypeName")
+                 "EST_S_Beam_Beam022" if i < 14 else "EST_S_Beam_Beam023", "Elements", 623 + i, "Type Name")
     plan.resolve()
     assert len(plan.errors) == 1
     error = plan.errors[0]
@@ -168,8 +168,8 @@ def test_concise_grouped_conflict_for_24_occurrences():
 
 def test_occurrence_edits_are_not_routed_to_new_types(exported):
     source, workbook, output, guids, _ = exported
-    edit(workbook, [("Elements", guids[0], "TypeName", "GROUP"),
-                    ("Elements", guids[0], "OccurrenceName", "EDITED OCCURRENCE"),
+    edit(workbook, [("Elements", guids[0], "Type Name", "GROUP"),
+                    ("Elements", guids[0], "Instance Name", "EDITED OCCURRENCE"),
                     ("COBieMapping", guids[0], "COBie_Component.Name", "EDITED PROPERTY")])
     update(exported)
     model = ifcopenshell.open(str(output))

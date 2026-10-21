@@ -192,8 +192,8 @@ def test_en_entities_logic_does_not_modify_target_entity(tmp_path):
 
     elements_df = sheets["Elements"]
     row = elements_df[elements_df["GlobalId"] == proxy.GlobalId].iloc[0]
-    elements_df.loc[elements_df["RowKey"] == row["RowKey"], "TargetEntity"] = "IfcWall"
-    elements_df.loc[elements_df["RowKey"] == row["RowKey"], "ApplyChange"] = "No"
+    elements_df.loc[elements_df["GlobalId"] == row["GlobalId"], "TargetEntity"] = "IfcWall"
+    elements_df.loc[elements_df["GlobalId"] == row["GlobalId"], "ApplyChange"] = "No"
     sheets["Elements"] = elements_df
     _write_workbook_sheets(xlsx, sheets)
 

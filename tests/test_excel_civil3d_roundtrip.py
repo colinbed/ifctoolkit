@@ -160,9 +160,9 @@ def test_reextract_preserves_target_override_and_suggestions(tmp_path):
     re_elements_df = pd.read_excel(xlsx, sheet_name="Elements")
     row = re_elements_df[re_elements_df["GlobalId"] == guid].iloc[0]
 
-    assert row["TargetEntity"] == "IfcPipeSegment"
-    assert row["TargetPredefinedType"] == "USERDEFINED"
-    assert row["ApplyChange"] == "Yes"
-    assert "SuggestedEntity" in re_elements_df.columns
-    assert "SuggestionConfidence" in re_elements_df.columns
-    assert row["SuggestedEntity"] == "IfcWall"
+    assert row["IFC Entity"] == "IfcPipeSegment"
+    assert row["Predefined Type"] == "USERDEFINED"
+    assert "ApplyChange" not in re_elements_df.columns
+    assert "Suggested Entity (read-only)" in re_elements_df.columns
+    assert "Suggestion Confidence (read-only)" in re_elements_df.columns
+    assert row["Suggested Entity (read-only)"] == "IfcWall"

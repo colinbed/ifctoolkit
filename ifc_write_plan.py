@@ -15,6 +15,15 @@ BASELINE_SHEET = "_IFCWritebackBaseline"
 _UNSET = object()
 
 
+# Version 1 called occurrence.Description "TypeDescription". Preserve that
+# historical meaning; version 2's spaced header always targets the assigned type.
+ELEMENT_HEADER_ALIASES = {
+    1: (("OccurrenceName", "attribute", "Name"), ("Name", "attribute", "Name"),
+        ("ObjectType", "attribute", "ObjectType"), ("OccurrenceType", "attribute", "ObjectType"),
+        ("TypeDescription", "attribute", "Description"), ("TypeName", "type_attribute", "Name")),
+}
+
+
 def _text(value):
     value = clean(value)
     return "" if value is None else str(value)
@@ -37,6 +46,18 @@ class WorkbookWritePlan:
         self.unchanged = 0
         self.skipped = []
         self.baselines = {}
+        self.protected = {}
+        def identity(obj):
+            return getattr(obj, "GlobalId", None) or obj.id()
+        for entity in model:
+            if entity.is_a("IfcRelAggregates") or entity.is_a("IfcRelContainedInSpatialStructure"):
+                self.protected[entity.id()] = (entity.is_a(), tuple(
+                    (key, tuple(identity(v) for v in value) if isinstance(value, tuple) else identity(value) if hasattr(value, "id") else value)
+                    for key, value in entity.get_info().items() if key != "id"))
+            elif entity.is_a("IfcProduct"):
+                self.protected[entity.GlobalId] = tuple((attr, getattr(entity, attr).id() if getattr(entity, attr, None) else None)
+                    for attr in ("ObjectPlacement", "Representation"))
+        self.protected_geometry = {e.id(): str(e) for kind in ("IfcRepresentation", "IfcRepresentationItem", "IfcObjectPlacement") for e in model.by_type(kind)}
 
     def add(self, element, target, value, sheet, row, field, config=None, baseline=_UNSET):
         value = clean(value)
@@ -55,6 +76,9 @@ class WorkbookWritePlan:
                                      Status="Skipped: type object missing",
                                      Message=f"{sheet} row {row}: {field} requested {value!r}"))
             return
+        if kind == "material":
+            from ifc_excel_targets import material_assignment
+            owner = material_assignment(element)[0]
         if kind == "occurrence_property":
             kind = "property"
         if kind in {"predefined_type", "predefinedtype"}:
@@ -216,7 +240,24 @@ class WorkbookWritePlan:
         return self.rows + self.skipped
 
     def verify(self, model):
-        if self.splits:
+        for step_id, expected in self.protected_geometry.items():
+            if str(model.by_id(step_id)) != expected:
+                raise ValueError(f"Output verification failed: geometry/placement #{step_id} changed")
+        for key, expected in self.protected.items():
+            if isinstance(key, str):
+                entity = model.by_guid(key)
+                actual = tuple((attr, getattr(entity, attr).id() if getattr(entity, attr, None) else None)
+                               for attr in ("ObjectPlacement", "Representation"))
+            else:
+                entity = model.by_id(key)
+                def identity(obj):
+                    return getattr(obj, "GlobalId", None) or obj.id()
+                actual = (entity.is_a(), tuple(
+                    (attr, tuple(identity(v) for v in value) if isinstance(value, tuple) else identity(value) if hasattr(value, "id") else value)
+                    for attr, value in entity.get_info().items() if attr != "id"))
+            if actual != expected:
+                raise ValueError(f"Output verification failed: spatial hierarchy/geometry reference {key} changed")
+        if self.type_members:
             for original_guid, members in self.type_members.items():
                 for guid in members:
                     expected = self.assignments.get(guid, original_guid)
@@ -243,7 +284,8 @@ class WorkbookWritePlan:
 
     def summary(self):
         return dict(applied=sum(r["Status"] == "Applied" for r in self.rows),
-                    unchanged=self.unchanged, conflicting=len(self.errors),
+                    unchanged=self.unchanged, conflicting=sum(bool(e["requested_values"]) for e in self.errors),
+                    rejected=sum(not e["requested_values"] for e in self.errors),
                     affected_conflict_rows=len({(row["sheet"], row["row"])
                         for error in self.errors for group in error["requested_values"] for row in group["affected"]}),
                     created_types=self.created_types,
@@ -266,14 +308,7 @@ def build_workbook_write_plan(model, excel, elements, cobie, add_new="no", civil
         element = lookup(row.get("GlobalId"))
         if element is None:
             continue
-        for column, kind, attr in (
-            ("OccurrenceName", "attribute", "Name"),
-            ("Name", "attribute", "Name"),
-            ("ObjectType", "attribute", "ObjectType"),
-            ("OccurrenceType", "attribute", "ObjectType"),
-            ("TypeDescription", "attribute", "Description"),
-            ("TypeName", "type_attribute", "Name"),
-        ):
+        for column, kind, attr in ELEMENT_HEADER_ALIASES[1]:
             if column in elements.columns:
                 plan.add(element, dict(kind=kind, attribute=attr), row.get(column),
                          "Elements", index + 2, column)
@@ -329,5 +364,11 @@ def build_workbook_write_plan(model, excel, elements, cobie, add_new="no", civil
                 baseline = read_source(model, element, field.get("source") or target, row_values=row.to_dict())
                 plan.add(element, target, row.get(column), PROTOCOL_DATA_SHEET,
                          index + 2, column, cfg, baseline=baseline)
+    from ifc_excel_native_plan import add_native_sheets, expand_classes, validate_resolved
+    add_native_sheets(plan, excel, elements, types)
+    expand_classes(plan)
     plan.resolve()
+    if not plan.errors:
+        validate_resolved(plan)
+    plan.resolved.sort(key=lambda c: c["target"].get("kind") != "entity")
     return plan
